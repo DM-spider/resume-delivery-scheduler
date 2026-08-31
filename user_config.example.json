@@ -10,6 +10,13 @@
     "大模型应用",
     "提示词工程师"
   ],
+  "schedule": {
+    "weekdays": [1, 2, 3, 4, 5],
+    "startHour": 9,
+    "endHour": 18,
+    "minPerHour": 10,
+    "maxPerHour": 20
+  },
   "backend": {
     "job_score_delay_base_ms": 4000,
     "job_score_delay_jitter_ms": 500

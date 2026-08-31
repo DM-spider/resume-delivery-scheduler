@@ -6,6 +6,13 @@ import os
 DEFAULT_USER_CONFIG = {
     'introduce': '您好，我是一名对 AI 应用开发、自动化流程和工程落地感兴趣的求职者，想进一步了解这个岗位。',
     'tags': ['运维开发', 'SRE', 'DevOps', '运维工程师', '平台工程师', 'AI应用', 'AI应用工程师', 'AI开发', 'AI产品经理'],
+    'schedule': {
+        'weekdays': [1, 2, 3, 4, 5],
+        'startHour': 9,
+        'endHour': 18,
+        'minPerHour': 10,
+        'maxPerHour': 20,
+    },
     'backend': {
         'job_score_delay_base_ms': 4000,
         'job_score_delay_jitter_ms': 500,
@@ -289,6 +296,7 @@ class Config:
     frontend = USER_CONFIG['frontend']
     backend = USER_CONFIG['backend']
     scoring = USER_CONFIG['scoring']
+    schedule = USER_CONFIG['schedule']
 
     @classmethod
     def get_client_config(cls):
@@ -296,4 +304,5 @@ class Config:
             'introduce': cls.introduce,
             'tags': cls.tags,
             'frontend': cls.frontend,
+            'schedule': cls.schedule,
         }

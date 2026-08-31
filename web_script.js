@@ -579,6 +579,148 @@
         }
     }
 
+    // 小时调度器：计划只保存在当前脚本内存中，页面刷新即重置
+    class HourlyScheduler {
+        constructor(schedule) {
+            this.schedule = schedule || {};
+            // 状态：当前小时标识、时点列表、已消费位置
+            this.hourKey = '';
+            this.slots = [];
+            this.cursor = 0;
+        }
+
+        // 工作日判断
+        isWorkday(date) {
+            const weekdays = Array.isArray(this.schedule.weekdays) && this.schedule.weekdays.length
+                ? this.schedule.weekdays
+                : [1, 2, 3, 4, 5];
+            return weekdays.indexOf(date.getDay()) !== -1;
+        }
+
+        // 工作时段判断：startHour <= 当前小时 < endHour
+        isWorkTime(date) {
+            const startHour = typeof this.schedule.startHour === 'number' ? this.schedule.startHour : 9;
+            const endHour = typeof this.schedule.endHour === 'number' ? this.schedule.endHour : 18;
+            return this.isWorkday(date) && date.getHours() >= startHour && date.getHours() < endHour;
+        }
+
+        // 小时标识，用于判断是否进入新小时
+        getHourKey(date) {
+            return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}-${date.getHours()}`;
+        }
+
+        // 把当前小时平均分成 count 段，每段随机取一个时点，再按时间排序
+        buildSlots(hourStartMs) {
+            const minPerHour = Math.max(1, this.schedule.minPerHour || 10);
+            const maxPerHour = Math.max(minPerHour, this.schedule.maxPerHour || 20);
+            const count = minPerHour + Math.floor(Math.random() * (maxPerHour - minPerHour + 1));
+            const segMs = 3600 * 1000 / count;
+            const slots = [];
+            for (let i = 0; i < count; i++) {
+                slots.push(hourStartMs + i * segMs + Math.random() * segMs);
+            }
+            slots.sort((a, b) => a - b);
+            return slots;
+        }
+
+        // 进入新小时时重建计划，已过去的时点直接作废
+        ensurePlan(now, log) {
+            const hourKey = this.getHourKey(now);
+            if (hourKey === this.hourKey) return;
+            const hourStart = new Date(now.getTime());
+            hourStart.setMinutes(0, 0, 0);
+            this.hourKey = hourKey;
+            this.slots = this.buildSlots(hourStart.getTime());
+            this.cursor = 0;
+            while (this.cursor < this.slots.length && this.slots[this.cursor] <= now.getTime()) {
+                this.cursor++;
+            }
+            if (log) log(`本小时计划 ${this.slots.length} 次打招呼尝试`);
+        }
+
+        // 丢弃当前计划
+        reset() {
+            this.hourKey = '';
+            this.slots = [];
+            this.cursor = 0;
+        }
+
+        // 下一个整点
+        nextHourStart(nowMs) {
+            const next = new Date(nowMs);
+            next.setMinutes(0, 0, 0);
+            next.setHours(next.getHours() + 1);
+            return next.getTime();
+        }
+
+        // 下一个工作时段开始时间
+        nextWorkStart(nowMs) {
+            const startHour = typeof this.schedule.startHour === 'number' ? this.schedule.startHour : 9;
+            const next = new Date(nowMs);
+            next.setHours(startHour, 0, 0, 0);
+            while (!this.isWorkday(next) || next.getTime() <= nowMs) {
+                next.setDate(next.getDate() + 1);
+                next.setHours(startHour, 0, 0, 0);
+            }
+            return next.getTime();
+        }
+
+        formatTime(ms) {
+            const d = new Date(ms);
+            const pad = (n) => String(n).padStart(2, '0');
+            return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+        }
+
+        // 等到目标时间，分片睡眠
+        async sleepUntil(targetMs) {
+            while (true) {
+                const remaining = targetMs - Date.now();
+                if (remaining <= 0) return;
+                await tools.asyncSleep(Math.min(remaining, 30 * 1000));
+            }
+        }
+
+        // 等待并消费下一个未来时点；暂停期间到达的时点作废
+        async waitForNextSlot(log, isPaused) {
+            while (true) {
+                const now = new Date();
+                // 非工作时间：等待下一个工作日 09:00
+                if (!this.isWorkTime(now)) {
+                    this.reset();
+                    const nextMs = this.nextWorkStart(now.getTime());
+                    const next = new Date(nextMs);
+                    log(`当前不在工作时间，等待下一个工作日 ${next.getMonth() + 1}月${next.getDate()}日 ${this.formatTime(nextMs).slice(0, 5)}`);
+                    await this.sleepUntil(nextMs);
+                    continue;
+                }
+                this.ensurePlan(new Date(), log);
+                // 当前小时没有剩余时点：等待下一个整点重新生成计划
+                if (this.cursor >= this.slots.length) {
+                    await this.sleepUntil(this.nextHourStart(Date.now()));
+                    continue;
+                }
+                const slotMs = this.slots[this.cursor];
+                // 过期时点直接作废
+                if (slotMs <= Date.now()) {
+                    this.cursor++;
+                    continue;
+                }
+                log(`下一次计划时间 ${this.formatTime(slotMs)}`);
+                await this.sleepUntil(slotMs);
+                // 到点后处于暂停状态：该时点作废
+                if (isPaused()) {
+                    this.cursor++;
+                    log('暂停中，本时点作废');
+                    continue;
+                }
+                // 消费该时点，返回给调用方执行一次打招呼流程
+                this.cursor++;
+                log(`执行本小时第 ${this.cursor}/${this.slots.length} 次尝试`);
+                return slotMs;
+            }
+        }
+    }
+
     // boss 直聘
     class Zhipin {
         constructor() {
@@ -634,12 +776,16 @@
             let roundQueuedCount = 0;
             let currentKeyword = '';
             let currentTagIdx = -1;
+            let scheduler = null;
+            let schedulerWaiting = false;
             const processedJobHrefs = new Set();
 
             // 日志启动暂停事件
             const logger = new Logger(() => {
                 this.pause = false;
                 if (!started) return main();
+                // 主链正在等待时点，恢复后会自动继续，不重复启动
+                if (schedulerWaiting) return;
                 if (pendingRoundRestart) {
                     pendingRoundRestart = false;
                     return startRound();
@@ -884,6 +1030,7 @@
                     // 出错了
                     else {
                         logger.add(`打招呼失败`);
+                        logger.add(`本时点执行失败，继续等待下一时点`);
                     }
                     loop();
                 });
@@ -960,14 +1107,25 @@
                     logger.add(`开始计算职位 [${jobInfo.title}] 的匹配度`);
                     const decision = await api.getJobScore(jobInfo.title, jobInfo.salary, jobInfo.detail);
                     logger.add(`匹配度: ${decision.score} | 简历索引: ${decision.resumeIndex}`);
-                    // 如果分数达到阈值，打个招呼
+                    // 如果分数达到阈值，等待当前小时的下一个时点再打招呼
                     if (decision.score >= OPTIONS.thread) {
+                        if (!scheduler) {
+                            logger.add('调度器未初始化，跳过该岗位');
+                            return loop();
+                        }
+                        schedulerWaiting = true;
+                        try {
+                            await scheduler.waitForNextSlot((msg) => logger.add(msg), () => this.pause);
+                        } finally {
+                            schedulerWaiting = false;
+                        }
                         logger.add(`正在给职位 [${jobInfo.title}] 发送打招呼消息`);
                         // 判断是否有提醒返回
                         addToChatList(jobInfo.addUrl).then(() => {
                             armPendingGreet(jobInfo.title, decision);
                             tools.openTabNSetTimestamp(jobInfo.chatUrl, this.targets.chatGreet);
                         }).catch(() => {
+                            logger.add('本时点执行失败，继续等待下一时点');
                             clearPendingGreet();
                             loop();
                         });
@@ -1061,6 +1219,7 @@
                 Object.assign(OPTIONS, clientConfig.frontend);
                 this.tags = clientConfig.tags;
                 this.introduce = clientConfig.introduce;
+                scheduler = new HourlyScheduler(clientConfig.schedule);
                 logger.add('获取前端配置成功');
                 logger.add('获取标签成功: ' + this.tags.join('、'));
                 logger.add('获取自我介绍成功');

@@ -133,6 +133,16 @@ class SingleRouteBackendTests(unittest.TestCase):
         self.assertIn('frontend', client_config)
         self.assertNotIn('profile', client_config)
 
+    def test_client_config_exposes_schedule(self):
+        from config import Config
+
+        schedule = Config.get_client_config()['schedule']
+        self.assertEqual(schedule['weekdays'], [1, 2, 3, 4, 5])
+        self.assertEqual(schedule['startHour'], 9)
+        self.assertEqual(schedule['endHour'], 18)
+        self.assertEqual(schedule['minPerHour'], 10)
+        self.assertEqual(schedule['maxPerHour'], 20)
+
     def test_single_route_delivery_uses_fixed_introduce_and_resume_index(self):
         from core import evaluateSingleRouteDelivery
         from config import Config
