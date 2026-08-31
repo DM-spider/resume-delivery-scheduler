@@ -4,7 +4,7 @@
 
 **Goal:** 在保留 Tampermonkey + FastAPI 架构的前提下，实现工作日 09:00-18:00 每小时生成 10-20 个随机投递时点，每次只处理一个岗位；仅在 HR 明确索要简历时发送指定简历并回复“发给您了哈”。
 
-**Architecture:** Python 后端负责生成小时计划、持久化执行次数、判定当前是否允许投递以及保存会话状态；油猴脚本继续负责 BOSS 页面读取和点击，但每处理一个岗位前必须向后端领取一次执行许可。消息处理采用严格规则分类，只有 `explicit_request` 才能发送简历，`ambiguous` 和 `not_requested` 均转人工。
+**Architecture:** Python 后端只增加小时计划、执行许可和会话状态；油猴脚本继续沿用作者原有的搜索、评分、筛选、打招呼和简历序号选择流程，只在原流程外增加时间门控。消息处理仅把“收到任意新消息即发送简历”改为严格分类，只有 `explicit_request` 才发送，其他消息不处理并留给人工。
 
 **Tech Stack:** Python 3、FastAPI、Pydantic、SQLite（标准库）、Tampermonkey、原生 JavaScript、BroadcastChannel、unittest。
 
@@ -17,10 +17,12 @@
 - 执行窗口：`09:00 <= 当前时间 < 18:00`，即 9 个小时窗口。
 - 每个小时开始时生成本小时目标数，闭区间 `[10, 20]`。
 - 将目标数个时点随机分布在本小时剩余可用时间内；没有合适岗位时允许少投，不为凑数发送低匹配岗位。
-- 自动投递与人工投递共用手工可调整的小时计数，避免叠加超量。
 - 默认启用 `dryRun`，正式发送必须显式关闭。
-- 验证码、登录失效、沟通上限、页面结构异常出现后暂停，不自动绕过。
 - 每个会话最多自动发送一次简历；发送后不再自动聊天。
+- 保持作者现有的 `start_backend.bat` 启动方式，不增加一键启动器。
+- 不修改 `core.py` 的岗位评分、关键词权重、投递阈值和岗位匹配策略。
+- 不修改作者现有的搜索词轮换、岗位详情读取、招呼语和 `resumeIndex` 选取逻辑。
+- 不新增验证码识别、浏览器反检测或平台限制绕过逻辑，沿用原项目现有异常处理。
 
 ## 方案比较
 
@@ -32,9 +34,9 @@
 
 代码量较少，但后台标签页可能被冻结，刷新或浏览器重启后状态容易丢失，不适合小时级稳定调度。
 
-### 方案 C：改为 Playwright 常驻服务
+### 方案 C：改为 Playwright 常驻服务（不采用）
 
-可做到更完整的一键启动，但需要重写现有页面操作，浏览器自动化特征和维护成本更高，不作为本轮范围。
+需要重写现有页面操作和启动方式，超出“只改时间和简历发送条件”的范围。
 
 ## 状态模型
 
@@ -49,7 +51,7 @@
                          \-> not_requested -> handed_to_human
 ```
 
-## Task 1: 固化配置与安全默认值
+## Task 1: 添加调度配置
 
 **Files:**
 - Modify: `config.py`
@@ -180,7 +182,6 @@ git commit -m "feat: generate hourly delivery plans"
 - 同一小时只能创建一份计划。
 - 一个计划时点只能被领取一次。
 - 浏览器重复请求不会重复增加完成数。
-- 支持记录人工投递数并占用小时预算。
 - 重启并重新打开数据库后状态仍存在。
 
 **Step 2: 运行测试并确认失败**
@@ -196,8 +197,7 @@ CREATE TABLE hourly_plans (
   hour_key TEXT PRIMARY KEY,
   target_count INTEGER NOT NULL,
   scheduled_json TEXT NOT NULL,
-  completed_count INTEGER NOT NULL DEFAULT 0,
-  manual_count INTEGER NOT NULL DEFAULT 0
+  completed_count INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE dispatch_claims (
@@ -252,7 +252,6 @@ git commit -m "feat: persist scheduler and conversation state"
 - 到点后返回唯一 `claimId`。
 - `POST /scheduler/complete` 幂等完成许可。
 - `POST /scheduler/pause` 立即阻止新许可。
-- `POST /scheduler/manual-count` 合并人工投递数。
 
 **Step 2: 实现 API**
 
@@ -263,7 +262,6 @@ POST /scheduler/complete
 POST /scheduler/skip
 POST /scheduler/pause
 POST /scheduler/resume
-POST /scheduler/manual-count
 ```
 
 `claim` 返回：
@@ -290,7 +288,7 @@ git add main.py test_scheduler_api.py
 git commit -m "feat: expose scheduler control API"
 ```
 
-## Task 5: 油猴脚本改为一次许可处理一个岗位
+## Task 5: 为作者原投递流程增加时间门控
 
 **Files:**
 - Modify: `web_script.js:406`
@@ -312,18 +310,19 @@ git commit -m "feat: expose scheduler control API"
 
 增加 `getSchedulerStatus()`、`claimDispatch()`、`completeDispatch()` 和 `skipDispatch()`。
 
-**Step 3: 改造搜索循环**
+**Step 3: 在原搜索循环外增加许可门控**
 
 - 定时轮询 `claimDispatch()`。
 - 未获许可时不打开岗位详情。
-- 每次许可最多处理一个最终合格岗位。
-- 没有合格岗位时标记 `skip`，不为凑数降低阈值。
+- 获得许可后继续执行作者原有的关键词搜索、岗位评分和阈值判断。
+- 每次许可最多发送一次作者原流程判定合格的招呼语。
+- 没有合格岗位时标记 `skip`，保持作者原有评分阈值不变。
 - `dryRun=true` 时只写日志，不点击“立即沟通”和发送按钮。
 - 成功、失败和跳过都必须回报对应的 `claimId`。
 
-**Step 4: 增加异常停止条件**
+**Step 4: 验证原投递策略未被修改**
 
-识别验证码、登录页、沟通上限和关键选择器缺失；出现任一条件时调用 `/scheduler/pause` 并显示原因。
+契约测试确认 `api.getJobScore()`、`decision.score >= OPTIONS.thread`、原标签轮换和原招呼语发送路径仍然存在；本任务不修改 `core.py` 评分算法，也不增加新的风控处理。
 
 **Step 5: 检查 JavaScript 语法**
 
@@ -444,9 +443,9 @@ POST /conversations/hand-off
 
 删除“只要对方发来新消息且还没发过简历，就直接发送简历”的主链行为。只有后端返回 `explicit_request` 和 `sendAllowed=true` 时才调用 `sendResume()`。
 
-**Step 4: 按名称选择简历**
+**Step 4: 保留作者原有简历选择方式**
 
-配置新增 `resumeDisplayName`。脚本遍历 BOSS 简历列表并按显示名称精确匹配；找不到时暂停并转人工，不允许回退到第 1 份简历。
+继续使用作者现有的 `resumeIndex` 和 `sendResume()`，本轮不修改简历列表选择和回退策略。
 
 **Step 5: 确认发送结果后回复**
 
@@ -469,38 +468,7 @@ git add web_script.js main.py storage.py test_conversation_flow.py user_config.e
 git commit -m "feat: send resume only on explicit request"
 ```
 
-## Task 8: 增加运行状态和一键启动入口
-
-**Files:**
-- Modify: `start_backend.bat`
-- Create: `start_all.bat`
-- Modify: `README.md`
-
-**Step 1: 增加启动前检查**
-
-检查 Python、依赖、`user_config.json`、端口 8000 和 BOSS URL。缺失配置时打印明确提示并退出。
-
-**Step 2: 创建启动器**
-
-`start_all.bat` 负责：
-
-- 启动 FastAPI 后端。
-- 等待 `/scheduler/status` 可用。
-- 用默认浏览器打开 BOSS 职位页。
-- 不负责静默安装 Tampermonkey。
-
-**Step 3: 更新文档**
-
-记录首次安装油猴、导入脚本、dry-run、正式模式、暂停与恢复、人工投递计数和异常处理流程。
-
-**Step 4: 提交**
-
-```bash
-git add start_backend.bat start_all.bat README.md
-git commit -m "docs: add scheduled delivery startup workflow"
-```
-
-## Task 9: 全量验证与人工验收
+## Task 8: 全量验证、配置说明与人工验收
 
 **Files:**
 - Modify: `README.md`
@@ -523,16 +491,20 @@ Expected: 退出码 0。
 - 验证每小时计划数量、边界和重启恢复。
 - 验证 dry-run 不产生任何真实点击。
 - 验证“你好”“不用发简历”“请发简历”三种消息路径。
+- 验证原搜索词、评分结果、投递阈值和招呼语行为与上游基线一致。
 
 **Step 4: 测试账号小范围验收**
 
 - 保持 `dryRun=false`，单小时目标临时设为 1。
 - 发送一个招呼并核对日志。
 - 用测试会话发送明确索要简历消息。
-- 核对简历名称、发送记录、回复内容和人工接管状态。
-- 验证验证码或登录失效会暂停任务。
+- 核对原 `resumeIndex` 选择结果、发送记录、回复内容和人工接管状态。
 
-**Step 5: 最终提交**
+**Step 5: 更新配置说明**
+
+在 `README.md` 中只补充调度配置、dry-run 和明确索要简历的规则，保持原有 `start_backend.bat` 启动步骤不变。
+
+**Step 6: 最终提交**
 
 ```bash
 git add README.md
@@ -544,9 +516,9 @@ git commit -m "test: document scheduled delivery acceptance results"
 - 工作时间之外无法领取投递许可。
 - 每个小时的计划数在配置范围内，且执行次数不会超过计划。
 - 重启浏览器或后端不会重复消费计划。
-- 自动与人工投递可以合并计数。
+- 作者原有岗位搜索、规则评分、阈值、招呼语和简历序号选择逻辑保持不变。
 - 非明确索要简历的消息永远不会触发简历发送。
-- 找不到指定名称简历时停止，不回退到其他简历。
 - 简历发送成功后仅回复一次“发给您了哈”，随后转人工。
-- dry-run、暂停、异常停止和审计日志均可验证。
+- 后端仍通过原 `start_backend.bat` 启动，不新增一键启动入口。
+- dry-run、暂停和审计日志均可验证。
 
