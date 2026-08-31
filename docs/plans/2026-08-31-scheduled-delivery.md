@@ -2,51 +2,75 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** 保留原作者的岗位搜索、评分、筛选和打招呼流程，移除未使用的 LLM 遗留能力，只增加工作日 09:00-18:00 每小时随机投递 10-20 份的时间控制，并将简历发送条件改为“HR 明确索要”。
+**Goal:** 保留现有搜索、岗位评分和打招呼主链，移除与目标无关的遗留能力，实现工作日分时投递，以及“HR 明确索要时才自动发送一次简历”。
 
-**Architecture:** 岗位筛选继续由 Python 关键词表、子串匹配和固定权重完成，不调用 LLM；HR 是否索要简历由油猴脚本中的确定性文本规则判断。调度状态只保存在当前油猴脚本的内存中，不增加 SQLite、调度 API 或新后端进程。油猴脚本启动后为每个小时生成 10-20 个分散的随机时点，在原作者判定岗位可以投递后等待下一个时点，再继续执行原打招呼流程；聊天页只在最新 HR 消息明确索要简历且当前会话未发过简历时调用作者原有 `sendResume()`。
+**Architecture:** 后端只负责读取配置和执行现有规则评分；油猴脚本负责搜索、小时调度、打招呼和简历请求判断。小时计划只保存在油猴脚本内存中，岗位与消息判断全部使用确定性程序规则，不使用 LLM、数据库或新增调度接口。
 
-**Tech Stack:** Python 3、FastAPI、Tampermonkey、原生 JavaScript、BroadcastChannel、unittest。不使用 Ollama、云端模型 API 或其他 LLM。
+**Tech Stack:** Python 3、FastAPI、Tampermonkey、原生 JavaScript、BroadcastChannel、unittest。
 
 ---
 
-## 需求口径
+## 一、需求边界
 
-- 默认工作日为周一至周五。
-- 执行窗口为 `09:00 <= 当前时间 < 18:00`，共 9 个小时窗口。
-- 每个小时随机确定 10-20 个投递时点，并按时间先后逐份执行。
-- 随机时点分散在整个小时内，不在某个随机时间集中连续发送。
-- 每个随机时点最多允许一次打招呼尝试；成功或失败均进入下一个时点，不集中重试。
-- 计划和计数只在项目本次运行期间有效；浏览器脚本重新加载后重新开始计算。
-- 不增加 SQLite、文件持久化、调度状态 API 或状态管理页面。
-- 调度信息直接输出到原有页面日志和浏览器控制台。
-- 不新增一键启动入口，继续使用原作者的 `start_backend.bat`。
-- 删除遗留的 Ollama 依赖、模型配置和 LLM 接口；项目安装和运行不需要下载模型。
-- 不修改 `core.py` 中现有的关键词评分、权重、阈值和岗位匹配策略。
-- 不修改作者现有的搜索词轮换、岗位详情读取和招呼语发送逻辑。
-- 不修改作者现有的 `resumeIndex` 和简历选择方式。
-- 不新增 `dryRun`；该能力不属于原作者项目。
-- 每个聊天会话最多自动发送一次简历，发送后不再自动聊天。
+### 保留不动
 
-## 作者搜索词说明
+- 保留原 `start_backend.bat` 启动方式，不新增启动器。
+- 保留 `tags` 配置、搜索词轮换、岗位列表读取和详情页读取。
+- 保留 `core.py` 现有关键词表、子串匹配、权重、分数阈值和评分结果。
+- 保留搜索页现有 `addToChatList()`、聊天页 `SAY_HI` 和固定打招呼语发送流程。
+- 保留 `frontend.resumeIndex` 及原 `sendResume(resumeIndex)` 的简历选择方式。
+- 保留聊天记录中的附件简历标记，用于判断当前会话是否发过简历。
 
-作者的搜索词配置名是 `tags`：
+### 不做
 
-- `config.py` 的 `DEFAULT_USER_CONFIG['tags']` 提供代码内默认值。
-- `user_config.example.json` 提供用户配置模板。
-- 实际运行时，如果项目根目录存在 `user_config.json`，其中的 `tags` 会覆盖默认值。
-- 后端通过现有 `/client-config` 返回 `tags`，油猴脚本按数组顺序循环搜索。
+- 不使用 Ollama、云端模型 API 或其他 LLM。
+- 不增加 SQLite、JSON 调度状态文件、localStorage 调度状态或后端调度 API。
+- 不增加状态页面、管理后台、`dryRun` 或一键启动入口。
+- 不修改岗位搜索策略、岗位评分规则、投递阈值或简历选择策略。
+- 不自动处理作品集、地址确认、普通寒暄、岗位追问或后续沟通。
+- 不对失败的打招呼进行补发、集中重试或追赶投递数量。
 
-本次开发只增加调度配置，不改变 `tags` 的读取、覆盖和轮换方式。
+## 二、删除范围
 
-## 规则判断说明
+只删除已经确认无调用，或与本需求直接冲突的内容。
 
-- 搜索词来自用户配置的 `tags`，油猴脚本按顺序轮换搜索。
-- 岗位是否通过由 `core.py` 的关键词表、子串匹配、加减分和阈值完成。
-- HR 是否明确索要简历由 JavaScript 文本规则完成：先匹配否定表达，再匹配明确请求表达。
-- 上述流程均为确定性程序逻辑，不发送文本给本地或云端大模型。
+### 1. LLM 遗留内容
 
-## 执行流程
+- `requirements.txt` 中的 `ollama`。
+- 配置中的 `think_model`、`chat_model`、`character`、`resume_name`。
+- `core.py` 中的 Ollama 导入、生成介绍/标签/性格、AI 回复、AI 判断简历/作品集意图等函数。
+- `main.py` 中的 `/reply`、`/is-need-resume`、`/is-need-works`。
+- `web_script.js` 中对应的 `reply()`、`isNeedResume()`、`isNeedWorks()` 客户端方法。
+- 仅服务于上述能力的 `prompts.py`、`schema.py`、`tools.py`、`cache.py` 和 `resume-example.md`。
+
+### 2. 重复配置入口
+
+统一由 `/client-config` 返回 `tags`、`introduce`、`frontend` 和 `schedule`，删除：
+
+- 后端 `/tags`、`/get-introduce` 兼容接口。
+- 前端 `getTags()`、`getIntroduce()` 和旧接口回退分支。
+
+### 3. 与聊天目标无关的自动处理
+
+聊天页只保留“读取最新 HR 消息、判断是否发过简历、按需发送简历”。删除：
+
+- 作品集识别、`sendWorks()` 和作品集状态。
+- 地址确认状态。
+- 聊天页重新打开岗位详情并再次评分。
+- HR 主动联系后自动打招呼或自动发送“不合适”回复。
+- 已发简历后的自动聊天入口。
+
+### 4. 不需要的动作持久化
+
+调度状态和进度直接写入现有页面日志与浏览器控制台，删除：
+
+- 后端 `/log-action`。
+- 前端 `Api.logAction()` 及各处动作上报。
+- `job_decisions.jsonl`、`job_actions.jsonl` 写入逻辑。
+
+后端现有岗位评分控制台日志保留。
+
+## 三、最终执行流程
 
 ```text
 原作者搜索关键词并读取岗位
@@ -57,22 +81,55 @@
             ↓ 达到阈值
 等待当前小时下一个随机时点
             ↓
-执行原作者打招呼流程
+消费该时点并执行一次原作者打招呼流程
             ↓
-处理下一份岗位
+无论成功或失败，都处理下一份岗位
 
 HR 发来新消息
       ↓
+最新消息是否来自 HR？──────── 否 → 不处理
+      ↓ 是
 当前会话是否已经发过简历？── 是 → 不处理
       ↓ 否
 最新 HR 消息是否明确索要简历？── 否 → 不处理，留给用户
       ↓ 是
 调用原作者 sendResume(resumeIndex)
       ↓
-回复“发给您了哈”并停止自动聊天
+回复“发给您了哈”
+      ↓
+以后该会话不再执行任何自动聊天
 ```
 
-## Task 1: 移除 LLM 遗留依赖和入口
+## 四、小时调度规则
+
+- 工作日为周一至周五，对应 JavaScript `Date.getDay()` 的 `1-5`。
+- 执行窗口为 `09:00 <= 当前时间 < 18:00`。
+- 每个整点小时首次进入时，随机生成 `10-20` 个时点。
+- 将该小时平均分成 N 段，每段随机取一个时点，然后按时间排序，保证分散。
+- 时点代表“最多一次打招呼尝试”，不是“必须成功投递一份”。
+- 只有岗位评分达到原阈值时，才等待并消费下一个未来时点。
+- 时点在发起 `addToChatList()` 前立即消费；后续成功、业务拒绝、网络失败或超时均不退回。
+- 没有合格岗位时，已经过去的时点直接作废，不补发、不追赶。
+- 当前小时没有剩余时点时，等待下一个有效工作小时重新生成计划。
+- 非工作时间等待到下一个工作日 09:00，不执行打招呼。
+- 用户暂停期间不发送；等待中的时点到达后若处于暂停状态，该时点作废。
+- 浏览器脚本重新加载后内存计划重置，不恢复上一次计划。
+
+## 五、简历请求规则
+
+- 只读取当前会话最新一条 HR 文本，不分析完整上下文，不调用后端模型。
+- 先判断否定表达，再判断明确请求表达；否定规则优先。
+- Boss 内置“索要附件简历”请求卡片视为明确请求。
+- “你好”“方便聊聊吗”“介绍一下自己”等普通消息不发送简历。
+- “不用发简历”“不需要简历”“简历不匹配”“暂不考虑”等消息不发送简历。
+- “发一份简历”“简历发我一下”“请发送简历”“麻烦把简历发过来”等明确表达才发送。
+- 简历索引直接使用已经通过 `/client-config` 载入的 `OPTIONS.resumeIndex`，不重新请求岗位评分。
+- `sendResume()` 只负责发送附件；附件动作成功后再单独发送“发给您了哈”。
+- 聊天记录已经出现“点击预览附件简历”时，永久跳过该会话的自动处理。
+
+---
+
+## Task 1: 清理无关代码并收敛后端接口
 
 **Files:**
 - Modify: `requirements.txt`
@@ -83,85 +140,67 @@ HR 发来新消息
 - Modify: `web_script.js`
 - Modify: `test_single_route_backend.py`
 - Delete: `prompts.py`
-- Delete: `tools.py`
 - Delete: `schema.py`
+- Delete: `tools.py`
 - Delete: `cache.py`
+- Delete: `resume-example.md`
 
-**Step 1: 固化无 LLM 主链测试**
+**Step 1: 调整测试配置**
 
-调整测试配置，删除 `think_model`、`chat_model` 和 `character`，验证以下接口仍正常：
+从测试配置删除 `resume_name`、`think_model`、`chat_model`、`character`，保留 `introduce`、`tags`、`backend`、`frontend` 和 `scoring`。
 
-- `/tags`
-- `/get-introduce`
-- `/client-config`
-- `/get-job-score`
+**Step 2: 删除 LLM 和死代码**
 
-**Step 2: 删除运行依赖和配置**
+按“二、删除范围”清理依赖、配置、后端函数、旧接口、前端客户端方法和专用文件。
 
-- 从 `requirements.txt` 删除 `ollama`。
-- 从默认配置和用户配置模板删除 `think_model`、`chat_model`、`character`。
-- 删除仅供旧缓存层使用、实际未参与简历选择的 `resume_name`；简历仍由 `frontend.resumeIndex` 选择。
-- `/client-config` 不再返回 `character`。
+`core.py` 最终只保留岗位文本解析、规则匹配、评分和 `evaluateSingleRouteDelivery()`。
 
-**Step 3: 删除未使用的 LLM 代码**
+**Step 3: 统一配置入口**
 
-- 从 `core.py` 删除 Ollama 导入、生成自我介绍/标签/性格、AI 回复和 AI 意图判断函数。
-- 保留 `evaluateJobMatch()`、`evaluateSingleRouteDelivery()` 和现有评分规则，不改变其行为。
-- 从 `main.py` 删除 `/reply`、`/is-need-resume`、`/is-need-works` 三个旧接口。
-- 从油猴脚本 `Api` 类删除对应的未使用客户端方法。
-- 删除只服务于上述旧能力的 `prompts.py`、`tools.py`、`schema.py`、`cache.py`。
+`main.py` 只保留：
 
-**Step 4: 验证项目无 LLM 引用**
+- `GET /client-config`
+- `POST /get-job-score`
 
-Run: `rg -n "ollama|think_model|chat_model|isNeedResume|isNeedWorks|replyMsg" -g "*.py" -g "*.js" -g "*.json" .`
+`web_script.js` 启动时只请求 `/client-config`，请求失败则在页面日志中提示并停止，不再调用旧接口回退。
 
-Expected: 业务代码和配置中无匹配结果。
+**Step 4: 删除动作持久化**
+
+删除 `/log-action`、前端动作上报及 JSONL 写入；保留页面 `Logger.add()` 和后端评分 `print()`。
+
+**Step 5: 验证**
 
 Run: `python -m unittest test_single_route_backend.py -v`
 
 Expected: 全部 PASS。
 
-**Step 5: 提交**
+Run: `node --check web_script.js`
+
+Expected: 退出码为 0。
+
+Run: `rg -n "ollama|think_model|chat_model|replyMsg|isNeedResume|isNeedWorks|/reply|/is-need-resume|/is-need-works" requirements.txt config.py core.py main.py web_script.js user_config.example.json`
+
+Expected: 无匹配结果。
+
+**Step 6: 提交**
 
 ```bash
-git add requirements.txt config.py user_config.example.json core.py main.py web_script.js test_single_route_backend.py
-git add -u prompts.py tools.py schema.py cache.py
-git commit -m "refactor: remove legacy llm dependencies"
+git add -A
+git commit -m "refactor: remove unused automation paths"
 ```
 
-## Task 2: 增加最小调度配置
+## Task 2: 增加内存小时调度
 
 **Files:**
 - Modify: `config.py`
 - Modify: `user_config.example.json`
 - Modify: `test_single_route_backend.py`
+- Modify: `web_script.js`
 
-**Step 1: 写失败测试**
-
-验证 `/client-config` 返回新的 `schedule`，同时原有 `tags`、`introduce` 和 `frontend` 内容保持不变：
-
-```python
-self.assertEqual(Config.schedule['weekdays'], [1, 2, 3, 4, 5])
-self.assertEqual(Config.schedule['startHour'], 9)
-self.assertEqual(Config.schedule['endHour'], 18)
-self.assertEqual(Config.schedule['minPerHour'], 10)
-self.assertEqual(Config.schedule['maxPerHour'], 20)
-self.assertEqual(Config.tags, ['AI产品工程师', 'AI应用工程师'])
-```
-
-**Step 2: 运行测试并确认失败**
-
-Run: `python -m unittest test_single_route_backend.py -v`
-
-Expected: FAIL，提示 `Config` 没有 `schedule`。
-
-**Step 3: 增加配置**
-
-在默认配置和用户配置模板中增加：
+**Step 1: 增加唯一一组调度配置**
 
 ```json
 "schedule": {
-  "enabled": true,
   "weekdays": [1, 2, 3, 4, 5],
   "startHour": 9,
   "endHour": 18,
@@ -170,30 +209,11 @@ Expected: FAIL，提示 `Config` 没有 `schedule`。
 }
 ```
 
-`Config.get_client_config()` 只增加 `schedule` 字段，不修改现有字段。
+`Config.get_client_config()` 返回该字段，不新增接口。
 
-**Step 4: 运行测试并确认通过**
+**Step 2: 增加内存调度器**
 
-Run: `python -m unittest test_single_route_backend.py -v`
-
-Expected: 原有测试和新增测试全部 PASS。
-
-**Step 5: 提交**
-
-```bash
-git add config.py user_config.example.json test_single_route_backend.py
-git commit -m "feat: add delivery schedule configuration"
-```
-
-## Task 3: 在油猴脚本内增加小时调度
-
-**Files:**
-- Modify: `web_script.js:15`
-- Modify: `web_script.js:682`
-
-**Step 1: 实现内存调度器**
-
-在 `web_script.js` 内增加一个小型 `HourlyScheduler`，只保存：
+在 `web_script.js` 内增加 `HourlyScheduler`，状态仅包含：
 
 ```javascript
 {
@@ -203,217 +223,166 @@ git commit -m "feat: add delivery schedule configuration"
 }
 ```
 
-它提供以下行为：
+实现工作日判断、下一个工作时段计算、分段随机时点生成、过期时点跳过、等待和单次消费。
 
-- 判断当前是否为配置中的工作日和工作时间。
-- 每进入一个新小时，随机生成 10-20 个时点。
-- 将当前小时平均分成 N 段，每段随机选择一个时点，使投递分散。
-- 对已经错过的时点直接跳过。
-- 返回距离下一个时点的等待毫秒数。
-- 浏览器脚本重新加载后状态清空，不读写数据库或本地文件。
+**Step 3: 接入搜索主链**
 
-**Step 2: 接入现有配置**
-
-从已有 `/client-config` 响应读取 `schedule`，不增加任何新接口。
-
-**Step 3: 接入原作者投递流程**
-
-仅在 `decision.score >= OPTIONS.thread` 后、执行原打招呼动作前等待下一个调度时点：
+只修改评分通过分支：
 
 ```text
-原评分通过
-→ scheduler.waitForNextSlot()
-→ 原 addToChatList()
+decision.score >= OPTIONS.thread
+→ await scheduler.waitForNextSlot()
+→ 若暂停则跳过本时点
+→ addToChatList(jobInfo.addUrl)
 → 原 SAY_HI 流程
 ```
 
-不得修改以下行为：
+评分未通过、岗位已聊过、详情读取失败等分支保持原样。
 
-- `api.getJobScore()` 调用方式。
-- `decision.score >= OPTIONS.thread` 判断。
-- 标签轮换和岗位详情读取。
-- `pendingGreetDecision`、`addToChatList()` 和 `SAY_HI` 流程。
+**Step 4: 输出页面日志**
 
-**Step 4: 输出日志**
-
-使用已有 `Logger.add()` 输出：
+至少输出：
 
 ```text
-本小时计划投递 14 份
-下一份计划时间 10:17:35
-执行本小时第 4/14 份
-当前不在投递时间，等待下一个工作时段
+本小时计划 14 次打招呼尝试
+下一次计划时间 10:17:35
+执行本小时第 4/14 次尝试
+本时点执行失败，继续等待下一时点
+当前不在工作时间，等待下一个工作日 09:00
 ```
 
-不增加调度 API 和状态页面。
-
-**Step 5: 检查 JavaScript 语法**
-
-Run: `node --check web_script.js`
-
-Expected: 无输出，退出码为 0。
-
-**Step 6: 提交**
-
-```bash
-git add web_script.js
-git commit -m "feat: schedule hourly greeting attempts"
-```
-
-## Task 4: 仅在 HR 明确索要时发送简历
-
-**Files:**
-- Modify: `web_script.js:1475`
-- Modify: `web_script.js:1651`
-
-**Step 1: 增加严格判断函数**
-
-在浏览器脚本内增加 `isExplicitResumeRequest(message)`，只读取最新一条 HR 文本；使用字符串标准化和正则/关键词白名单，不调用后端模型接口。
-
-判断顺序：
-
-1. 先匹配否定表达，命中后禁止发送。
-2. 再匹配明确请求表达，命中后允许发送。
-3. 其他内容一律不发送。
-
-明确允许的基础表达：
-
-```text
-发一份简历
-简历发我一下
-请发送简历
-麻烦把简历发过来
-方便发下详细简历吗
-```
-
-明确禁止的基础表达：
-
-```text
-不用发简历
-不需要简历
-我看过你的简历
-简历不太匹配
-暂不考虑
-```
-
-“你好”“方便聊聊吗”“详细介绍一下”等其他消息全部不发送简历。
-
-**Step 2: 替换直接发送条件**
-
-将当前：
-
-```text
-新消息 + 未发送过简历 → 直接发送简历
-```
-
-改成：
-
-```text
-新消息 + 未发送过简历 + 最新 HR 消息明确索要 → 发送简历
-```
-
-继续使用作者现有 `chatInfo.resumeSended` 防止同一会话重复发送，不新增 SQLite 或会话状态接口。
-
-**Step 3: 保留原简历选择逻辑**
-
-继续调用：
-
-```javascript
-sendResume(decision.resumeIndex)
-```
-
-不修改 `resumeIndex`、简历列表选择和回退方式。
-
-**Step 4: 修改成功回复**
-
-简历发送动作完成后，将原来的“已发送，请查收”改为：
-
-```text
-发给您了哈
-```
-
-之后继续保持作者当前行为：已发过简历则跳过自动聊天。
-
-**Step 5: 检查语法并提交**
-
-Run: `node --check web_script.js`
-
-Expected: 无输出，退出码为 0。
-
-```bash
-git add web_script.js
-git commit -m "feat: require explicit resume request"
-```
-
-## Task 5: 回归验证和文档更新
-
-**Files:**
-- Modify: `README.md`
-
-**Step 1: 运行原作者后端测试**
+**Step 5: 验证并提交**
 
 Run: `python -m unittest test_single_route_backend.py -v`
 
-Expected: 全部 PASS，岗位评分结果与上游基线一致。
+Run: `node --check web_script.js`
 
-**Step 2: 检查浏览器脚本**
+Expected: 均通过。
+
+```bash
+git add config.py user_config.example.json test_single_route_backend.py web_script.js
+git commit -m "feat: schedule hourly greeting attempts"
+```
+
+## Task 3: 严格限制自动发送简历
+
+**Files:**
+- Modify: `web_script.js`
+
+**Step 1: 增加确定性判断函数**
+
+新增 `isExplicitResumeRequest(message, hasRequestCard)`：
+
+1. 标准化空格和常见标点。
+2. 内置索要简历卡片直接返回 `true`。
+3. 命中否定表达返回 `false`。
+4. 命中明确请求表达返回 `true`。
+5. 其他情况返回 `false`。
+
+**Step 2: 精简聊天记录结构**
+
+`getChatInfo()` 只返回：
+
+```javascript
+{
+  msgs,
+  resumeSended,
+  hasResumeRequestCard
+}
+```
+
+删除作品集、地址确认、聊天页岗位元素和重复评分所需状态。
+
+**Step 3: 按唯一流程处理新消息**
+
+```javascript
+const lastMsg = chatInfo.msgs.at(-1);
+if (chatInfo.resumeSended) continue;
+
+const hasExplicitTextRequest = lastMsg
+  && lastMsg.role === 'user'
+  && isExplicitResumeRequest(lastMsg.content, false);
+if (!hasExplicitTextRequest && !chatInfo.hasResumeRequestCard) continue;
+
+await sendResume(OPTIONS.resumeIndex);
+await sendMsg('发给您了哈');
+```
+
+删除聊天页自动打招呼、自动拒绝、自动作品集和其他自动回复分支。
+
+**Step 4: 验证消息样例**
+
+- “你好” → 不发送。
+- “方便聊聊吗” → 不发送。
+- “我看过你的简历” → 不发送。
+- “不用发简历” → 不发送。
+- “麻烦发一份简历” → 发送一次。
+- Boss 索要附件简历卡片 → 发送一次。
+- 已有附件简历标记 → 永不再次发送。
+- 发送成功后 → 只回复一次“发给您了哈”。
+
+**Step 5: 检查并提交**
 
 Run: `node --check web_script.js`
 
 Expected: 退出码为 0。
 
-**Step 3: 验证时间边界**
+```bash
+git add web_script.js
+git commit -m "feat: send resume only on explicit request"
+```
 
-在测试配置中临时把每小时数量设为 1，分别验证：
+## Task 4: 回归验证和文档
 
-- 周一 08:59 不投递。
-- 周一 09:00 开始生成本小时计划。
-- 周一 17:59 仍属于投递窗口。
-- 周一 18:00 不再投递。
-- 周六不投递。
-- 新小时会重新生成计划和计数。
+**Files:**
+- Modify: `README.md`
 
-**Step 4: 验证消息条件**
+**Step 1: 自动检查**
 
-使用测试会话核对：
+Run: `python -m unittest test_single_route_backend.py -v`
 
-- “你好”不发送简历。
-- “方便聊聊吗”不发送简历。
-- “我看过你的简历”不发送简历。
-- “不用发简历”不发送简历。
-- “麻烦发一份简历”发送一次简历。
-- 重复扫描同一会话不再次发送。
-- 发送成功后回复“发给您了哈”。
+Run: `node --check web_script.js`
 
-**Step 5: 更新 README**
+Expected: 全部通过。
 
-只补充以下内容：
+**Step 2: 时间边界验证**
 
-- `schedule` 配置说明。
-- `tags` 的默认值与 `user_config.json` 覆盖方式。
-- 工作时间和每小时随机投递规则。
-- 明确索要简历的判断规则。
-- 删除 Ollama、模型配置和遗留 LLM 接口说明，明确项目不需要 LLM。
+- 周一 08:59 不执行。
+- 周一 09:00 生成当前小时计划。
+- 周一 17:59 仍可执行当前小时剩余时点。
+- 周一 18:00 停止执行。
+- 周六、周日不执行。
+- 新小时生成新的 10-20 个分散时点。
+- 失败时只消耗当前时点，不立即重试。
 
-保持原 `start_backend.bat` 启动说明不变。
+**Step 3: 主链回归**
 
-**Step 6: 提交**
+- `tags` 仍按配置顺序轮换。
+- 岗位评分结果与修改前一致。
+- 未达到阈值立即处理下一岗位。
+- 达到阈值后等待时点，再执行原打招呼流程。
+- HR 普通消息不触发任何自动回复。
+- HR 明确索要简历时只发送一次。
+
+**Step 4: 更新 README**
+
+README 只说明安装、原后端启动方式、`user_config.json`、`schedule`、`tags`、`resumeIndex`、工作时间、调度规则和简历请求规则。删除 LLM、旧接口、作品集和旧自动聊天说明。
+
+**Step 5: 提交**
 
 ```bash
 git add README.md
-git commit -m "docs: document scheduled delivery behavior"
+git commit -m "docs: document scheduled delivery workflow"
 ```
 
-## 完成标准
+## 六、完成标准
 
-- 项目仍通过原 `start_backend.bat` 启动。
-- `requirements.txt`、用户配置和业务代码中不再包含 Ollama 或模型配置，项目运行不需要 LLM。
-- 不存在 `dryRun`、SQLite、调度 API 或一键启动器。
-- 作者原有 `tags` 配置和搜索词轮换方式保持不变。
-- 作者原有岗位评分、投递阈值和招呼语流程保持不变。
-- 工作日 09:00-18:00 每小时在内存中生成 10-20 个随机时点。
-- 每个时点最多执行一次原作者打招呼尝试。
-- 非明确索要简历的消息不会触发简历发送。
-- 同一会话最多自动发送一次简历。
-- 简历发送后回复一次“发给您了哈”，之后不再自动聊天。
-- 调度计划和执行进度可以在原页面日志中查看。
+- 项目不包含 Ollama 或模型配置，运行不需要 LLM。
+- 后端只有配置和岗位评分两个业务接口。
+- 工作日 09:00-18:00 每小时生成 10-20 个分散时点。
+- 一个时点最多发起一次打招呼尝试，任何结果都不重试。
+- 搜索、评分、阈值和原打招呼流程未改变。
+- 非明确索要简历的 HR 消息不触发自动发送或自动回复。
+- 每个会话最多自动发送一次简历。
+- 简历发送后只回复“发给您了哈”，以后不再自动聊天。
+- 调度状态只存在于当前脚本内存，日志只输出到页面和控制台。
