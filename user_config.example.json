@@ -1,9 +1,5 @@
 {
-  "resume_name": "resume.md",
-  "think_model": "qwen3:0.6b",
-  "chat_model": "qwen3:0.6b",
   "introduce": "您好，我主要做 AI 产品工程方向，长期重度使用 Claude Code、Cursor、Codex 做工具与工作流，能独立跑通需求→提示词→代码生成→调试部署上线，Python 更熟。若方便，想请您看下我的简历。",
-  "character": "简洁 直接 礼貌",
   "tags": [
     "AI产品工程师",
     "AI应用工程师",

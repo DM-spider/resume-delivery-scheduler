@@ -4,11 +4,7 @@ import os
 
 
 DEFAULT_USER_CONFIG = {
-    'resume_name': 'resume.md',
-    'think_model': 'qwen3:0.6b',
-    'chat_model': 'qwen3:0.6b',
     'introduce': '您好，我是一名对 AI 应用开发、自动化流程和工程落地感兴趣的求职者，想进一步了解这个岗位。',
-    'character': '简洁 直接 礼貌',
     'tags': ['运维开发', 'SRE', 'DevOps', '运维工程师', '平台工程师', 'AI应用', 'AI应用工程师', 'AI开发', 'AI产品经理'],
     'backend': {
         'job_score_delay_base_ms': 4000,
@@ -276,11 +272,7 @@ USER_CONFIG = load_user_config()
 
 
 class Config:
-    resume_name = USER_CONFIG['resume_name']
-    think_model = USER_CONFIG['think_model']
-    chat_model = USER_CONFIG['chat_model']
     introduce = USER_CONFIG['introduce']
-    character = USER_CONFIG['character']
     tags = USER_CONFIG['tags']
 
     job_score_delay_base_ms = USER_CONFIG['backend']['job_score_delay_base_ms']
@@ -299,14 +291,9 @@ class Config:
     scoring = USER_CONFIG['scoring']
 
     @classmethod
-    def get_default_introduce(cls):
-        return cls.introduce
-
-    @classmethod
     def get_client_config(cls):
         return {
-            'introduce': cls.get_default_introduce(),
-            'character': cls.character,
+            'introduce': cls.introduce,
             'tags': cls.tags,
             'frontend': cls.frontend,
         }

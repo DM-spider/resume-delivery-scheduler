@@ -10,11 +10,7 @@ ROOT = Path(__file__).resolve().parent
 USER_CONFIG_PATH = ROOT / 'user_config.json'
 ORIGINAL_USER_CONFIG = USER_CONFIG_PATH.read_text(encoding='utf-8') if USER_CONFIG_PATH.exists() else None
 TEST_USER_CONFIG = {
-    'resume_name': 'resume.md',
-    'think_model': 'qwen3:0.6b',
-    'chat_model': 'qwen3:0.6b',
     'introduce': '测试用打招呼语',
-    'character': '简洁 直接 礼貌',
     'tags': ['AI产品工程师', 'AI应用工程师'],
     'backend': {
         'job_score_delay_base_ms': 0,

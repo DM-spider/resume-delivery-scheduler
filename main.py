@@ -1,63 +1,12 @@
 from datetime import datetime
 import asyncio
 import random
-import json
-from pathlib import Path
-from fastapi import FastAPI, Body, HTTPException
-from core import replyMsg, isNeedResume, isNeedWorks, evaluateSingleRouteDelivery
-from schema import Msg
+from fastapi import FastAPI, Body
+from core import evaluateSingleRouteDelivery
 from config import Config
 
 
 app = FastAPI()
-LOG_PATH = Path(__file__).resolve().parent / 'job_decisions.jsonl'
-ACTION_LOG_PATH = Path(__file__).resolve().parent / 'job_actions.jsonl'
-
-
-def append_job_decision_log(result: dict, raw_job: str, delay_ms: int):
-    log_record = {
-        'loggedAt': datetime.now().isoformat(timespec='seconds'),
-        'title': result.get('title'),
-        'detail': result.get('detail'),
-        'matchedField': result.get('matched_field'),
-        'keyword': result.get('keyword'),
-        'score': result.get('score'),
-        'introduce': result.get('introduce'),
-        'resumeIndex': result.get('resumeIndex'),
-        'titleScore': result.get('title_score'),
-        'detailScore': result.get('detail_score'),
-        'comboScore': result.get('combo_score'),
-        'titlePenaltyScore': result.get('title_penalty_score'),
-        'penaltyScore': result.get('penalty_score'),
-        'reason': result.get('reason'),
-        'delayMs': delay_ms,
-        'rawJob': raw_job,
-    }
-    with LOG_PATH.open('a', encoding='utf-8') as f:
-        f.write(json.dumps(log_record, ensure_ascii=False) + '\n')
-
-
-def append_job_action_log(action: dict):
-    action_record = {
-        'loggedAt': datetime.now().isoformat(timespec='seconds'),
-        **action,
-    }
-    with ACTION_LOG_PATH.open('a', encoding='utf-8') as f:
-        f.write(json.dumps(action_record, ensure_ascii=False) + '\n')
-
-
-@app.get("/tags", summary="获取职位标签")
-async def get_tags():
-    return {
-        'tags': Config.tags
-    }
-
-
-@app.get("/get-introduce", summary="获取自我介绍")
-async def get_introduce():
-    return {
-        'introduce': Config.get_default_introduce()
-    }
 
 
 @app.get("/client-config", summary="获取前端运行配置")
@@ -96,47 +45,12 @@ async def get_job_score(job: str = Body(..., description="职位信息")):
         f"reason={result['reason']}",
         flush=True
     )
-    append_job_decision_log(result, job, delay_ms)
     await asyncio.sleep(delay_ms / 1000)
     return {
         'score': result['score'],
         'introduce': result['introduce'],
         'resumeIndex': result['resumeIndex'],
     }
-
-
-@app.post("/log-action", summary="记录前端动作日志")
-async def log_action(action: dict = Body(..., description="动作日志")):
-    append_job_action_log(action)
-    return {'success': True}
-
-
-@app.post("/reply", summary="回复消息")
-async def reply(msgs: list[Msg] = Body(..., description="消息列表")):
-    try:
-        return replyMsg(msgs, '', Config.character)
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e)) from e
-
-
-@app.post("/is-need-resume", summary="是否需要简历")
-async def is_need_resume(msgs: list[Msg] = Body(..., description="消息列表")):
-    try:
-        return {
-            'need': isNeedResume(msgs)
-        }
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e)) from e
-
-
-@app.post("/is-need-works", summary="是否需要作品集")
-async def is_need_works(msgs: list[Msg] = Body(..., description="消息列表")):
-    try:
-        return {
-            'need': isNeedWorks(msgs)
-        }
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e)) from e
 
 
 if __name__ == '__main__':

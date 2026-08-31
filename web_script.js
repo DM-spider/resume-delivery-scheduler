@@ -441,24 +441,6 @@
         }
 
         /**
-         * 获取自我介绍
-         */
-        getIntroduce() {
-            return new Promise((resolve, reject) => this.__http('/get-introduce').then(res => {
-                resolve(res.introduce);
-            }).catch(reject));
-        }
-
-        /**
-         * 获取标签
-         */
-        getTags() {
-            return new Promise((resolve, reject) => this.__http('/tags').then(res => {
-                resolve(res.tags);
-            }).catch(reject));
-        }
-
-        /**
          * 获取前端运行配置
          */
         getClientConfig() {
@@ -475,52 +457,6 @@
             const data = `# 职位名称\n${title}\n\n# 薪资范围\n${salary}\n\n# 职位描述\n${detail}`;
             return new Promise((resolve, reject) => {
                 this.__http('/get-job-score', 'POST', JSON.stringify(data)).then(resolve).catch(reject);
-            });
-        }
-
-        /**
-         * 回复消息
-         * @param {string} msgs 消息记录
-         */
-        reply(msgs) {
-            return new Promise((resolve, reject) => {
-                this.__http('/reply', 'POST', JSON.stringify(msgs)).then(res => {
-                    resolve(res);
-                }).catch(reject);
-            });
-        }
-
-        /**
-         * 判断是否需要简历
-         * @param {string} msgs 消息记录
-         */
-        isNeedResume(msgs) {
-            return new Promise((resolve, reject) => {
-                this.__http('/is-need-resume', 'POST', JSON.stringify(msgs)).then(res => {
-                    resolve(res.need);
-                }).catch(reject);
-            });
-        }
-
-        /**
-         * 判断是否需要作品集
-         * @param {string} msgs 消息记录
-         */
-        isNeedWorks(msgs) {
-            return new Promise((resolve, reject) => {
-                this.__http('/is-need-works', 'POST', JSON.stringify(msgs)).then(res => {
-                    resolve(res.need);
-                }).catch(reject);
-            });
-        }
-
-        /**
-         * 记录动作日志
-         * @param {object} payload 动作信息
-         */
-        logAction(payload) {
-            return new Promise((resolve, reject) => {
-                this.__http('/log-action', 'POST', JSON.stringify(payload)).then(resolve).catch(reject);
             });
         }
     }
@@ -884,14 +820,6 @@
                 }
             };
 
-            const logAction = async (payload) => {
-                try {
-                    await api.logAction(payload);
-                } catch (e) {
-                    console.log('logAction failed', e);
-                }
-            };
-
             // 获取职位信息
             const getJobInfo = async (href) => {
                 // 打开窗口
@@ -949,27 +877,13 @@
                         return;
                     }
                     // 告知结果
-                    const finalDecision = pendingGreetDecision;
-                    const finalTitle = pendingGreetTitle;
                     clearPendingGreet();
                     if (data.success) {
                         logger.add(`打招呼成功`);
-                        await logAction({
-                            action: 'greet_sent',
-                            scene: 'search',
-                            title: finalTitle,
-                            resumeIndex: finalDecision?.resumeIndex ?? OPTIONS.resumeIndex,
-                        });
                     }
                     // 出错了
                     else {
                         logger.add(`打招呼失败`);
-                        await logAction({
-                            action: 'greet_failed',
-                            scene: 'search',
-                            title: finalTitle,
-                            resumeIndex: finalDecision?.resumeIndex ?? OPTIONS.resumeIndex,
-                        });
                     }
                     loop();
                 });
@@ -1034,87 +948,32 @@
                     const jobInfo = await getJobInfo(href);
                     if (jobInfo.skip) {
                         logger.add(`职位跳过: ${jobInfo.skipReason}`);
-                        await logAction({
-                            action: 'job_skip',
-                            scene: 'search',
-                            title: jobInfo.title || null,
-                            salary: jobInfo.salary || null,
-                            detail: jobInfo.detail || null,
-                            reason: jobInfo.skipReason,
-                        });
                         return loop();
                     }
                     processedJobHrefs.add(href);
                     // 如果聊过，下一个
                     if (jobInfo.talked) {
                         logger.add(`职位 [${jobInfo.title}] 已经聊过，下一个`);
-                        await logAction({
-                            action: 'job_already_talked',
-                            scene: 'search',
-                            title: jobInfo.title,
-                            salary: jobInfo.salary,
-                        });
                         return loop();
                     }
                     // 否则发送消息计算匹配度
                     logger.add(`开始计算职位 [${jobInfo.title}] 的匹配度`);
                     const decision = await api.getJobScore(jobInfo.title, jobInfo.salary, jobInfo.detail);
                     logger.add(`匹配度: ${decision.score} | 简历索引: ${decision.resumeIndex}`);
-                    await logAction({
-                        action: 'job_decision_consumed',
-                        scene: 'search',
-                        title: jobInfo.title,
-                        salary: jobInfo.salary,
-                        score: decision.score,
-                        resumeIndex: decision.resumeIndex,
-                    });
                     // 如果分数达到阈值，打个招呼
                     if (decision.score >= OPTIONS.thread) {
                         logger.add(`正在给职位 [${jobInfo.title}] 发送打招呼消息`);
-                        await logAction({
-                            action: 'greet_queued',
-                            scene: 'search',
-                            title: jobInfo.title,
-                            salary: jobInfo.salary,
-                            resumeIndex: decision.resumeIndex,
-                            score: decision.score,
-                        });
                         // 判断是否有提醒返回
-                        addToChatList(jobInfo.addUrl).then(async () => {
-                            await logAction({
-                                action: 'chat_open_requested',
-                                scene: 'search',
-                                title: jobInfo.title,
-                                chatUrl: jobInfo.chatUrl,
-                                resumeIndex: decision.resumeIndex,
-                            });
+                        addToChatList(jobInfo.addUrl).then(() => {
                             armPendingGreet(jobInfo.title, decision);
                             tools.openTabNSetTimestamp(jobInfo.chatUrl, this.targets.chatGreet);
-                        }).catch(async (err) => {
-                            await logAction({
-                                action: 'greet_queue_failed',
-                                scene: 'search',
-                                title: jobInfo.title,
-                                resumeIndex: decision.resumeIndex,
-                                addUrl: jobInfo.addUrl,
-                                chatUrl: jobInfo.chatUrl,
-                                reason: String(err),
-                            });
+                        }).catch(() => {
                             clearPendingGreet();
                             loop();
                         });
                     }
                     // 否则下一轮
                     else {
-                        await logAction({
-                            action: 'job_below_threshold',
-                            scene: 'search',
-                            title: jobInfo.title,
-                            salary: jobInfo.salary,
-                            score: decision.score,
-                            threshold: OPTIONS.thread,
-                            resumeIndex: decision.resumeIndex,
-                        });
                         loop();
                     }
                 } catch (e) {
@@ -1189,30 +1048,24 @@
                 // 开始广播
                 startBroadcast();
                 // 获取统一配置
-                const clientConfig = await api.getClientConfig().catch((e) => {
-                    logger.add('获取统一配置失败，将回退旧接口');
-                    return null;
-                });
-                if (clientConfig && clientConfig.frontend) {
-                    Object.assign(OPTIONS, clientConfig.frontend);
-                    logger.add('获取前端配置成功');
+                const clientConfig = await api.getClientConfig().catch(() => null);
+                if (!clientConfig
+                    || !clientConfig.frontend
+                    || !Array.isArray(clientConfig.tags)
+                    || !clientConfig.tags.length
+                    || typeof clientConfig.introduce !== 'string'
+                    || !clientConfig.introduce) {
+                    logger.add('获取统一配置失败，程序停止');
+                    return;
                 }
-                if (clientConfig && Array.isArray(clientConfig.tags) && clientConfig.tags.length) {
-                    this.tags = clientConfig.tags;
-                    logger.add('获取标签成功: ' + this.tags.join('、'));
-                } else {
-                    this.tags = await api.getTags();
-                    logger.add('获取标签成功(旧接口): ' + this.tags.join('、'));
-                }
+                Object.assign(OPTIONS, clientConfig.frontend);
+                this.tags = clientConfig.tags;
+                this.introduce = clientConfig.introduce;
+                logger.add('获取前端配置成功');
+                logger.add('获取标签成功: ' + this.tags.join('、'));
+                logger.add('获取自我介绍成功');
                 if (typeof tagIdx === 'number' && this.tags.length) {
                     currentTagIdx = ((tagIdx % this.tags.length) + this.tags.length) % this.tags.length - 1;
-                }
-                if (clientConfig && typeof clientConfig.introduce === 'string' && clientConfig.introduce) {
-                    this.introduce = clientConfig.introduce;
-                    logger.add('获取自我介绍成功');
-                } else {
-                    this.introduce = await api.getIntroduce();
-                    logger.add('获取自我介绍成功(旧接口)');
                 }
                 await startRound();
             };
@@ -1356,20 +1209,10 @@
                     const greetDecision = await this.broadcast.sendAndReceive(this.targets.search, this.bcTypes.SAY_HI);
                     const introduce = greetDecision.introduce;
                     await sendMsg(introduce);
-                    await logAction({
-                        action: 'greet_message_sent',
-                        scene: 'chat_greet',
-                        resumeIndex: greetDecision.resumeIndex ?? OPTIONS.resumeIndex,
-                    });
                     this.broadcast.send(this.targets.search, this.bcTypes.SAY_HI, { success: true }).then(() => {
                         this.broadcast.destroy();
                     });
                 } catch (e) {
-                    await logAction({
-                        action: 'greet_message_failed',
-                        scene: 'chat_greet',
-                        reason: String(e),
-                    });
                     this.broadcast.send(this.targets.search, this.bcTypes.SAY_HI, { success: false }).then(() => {
                         this.broadcast.destroy();
                     });
@@ -1529,13 +1372,6 @@
             const chat = async () => {
                 // api
                 const api = new Api();
-                const logAction = async (payload) => {
-                    try {
-                        await api.logAction(payload);
-                    } catch (e) {
-                        console.log('logAction failed', e);
-                    }
-                };
                 // 开始广播
                 startBroadcast(this.targets.chat);
                 // 获取默认自我介绍（兜底）
@@ -1601,48 +1437,19 @@
                                 status(`开始计算职位 [${jobInfo.title}] 的匹配度`);
                                 const decision = await api.getJobScore(jobInfo.title, jobInfo.salary, jobInfo.detail);
                                 status(`匹配度: ${decision.score} | 简历索引: ${decision.resumeIndex}`);
-                                await logAction({
-                                    action: 'job_decision_consumed',
-                                    scene: 'chat',
-                                    title: jobInfo.title,
-                                    salary: jobInfo.salary,
-                                    score: decision.score,
-                                    resumeIndex: decision.resumeIndex,
-                                });
                                 // 如果分数达到阈值并且未聊过天，打个招呼
                                 if (decision.score >= OPTIONS.thread && !chatInfo.msgs.length) {
                                     status(`正在给职位 [${jobInfo.title}] 发送打招呼消息`);
                                     try {
                                         await sendMsg(decision.introduce || defaultIntroduce);
-                                        await logAction({
-                                            action: 'chat_greet_sent',
-                                            scene: 'chat',
-                                            title: jobInfo.title,
-                                            resumeIndex: decision.resumeIndex,
-                                        });
                                         status(`打招呼成功`);
                                     } catch (e) {
-                                        await logAction({
-                                            action: 'chat_greet_failed',
-                                            scene: 'chat',
-                                            title: jobInfo.title,
-                                            resumeIndex: decision.resumeIndex,
-                                            reason: String(e),
-                                        });
                                         status(`打招呼失败: ${e}`);
                                     }
                                     continue;
                                 }
                                 // 未达到阈值，直接下一个
                                 else if (decision.score < OPTIONS.thread) {
-                                    await logAction({
-                                        action: 'chat_rejected_below_threshold',
-                                        scene: 'chat',
-                                        title: jobInfo.title,
-                                        score: decision.score,
-                                        threshold: OPTIONS.thread,
-                                        resumeIndex: decision.resumeIndex,
-                                    });
                                     await sendMsg('不好意思，不太合适哈，祝早日找到合适的人选。')
                                     continue;
                                 }
@@ -1658,15 +1465,6 @@
                                 const decision = await api.getJobScore(jobInfo.title, jobInfo.salary, jobInfo.detail);
                                 status(`检测到新消息，直接发送简历（简历索引 ${decision.resumeIndex}）`);
                                 const resumeResult = await sendResume(decision.resumeIndex);
-                                await logAction({
-                                    action: 'resume_sent',
-                                    scene: 'chat',
-                                    title: jobInfo.title,
-                                    salary: jobInfo.salary,
-                                    requestedResumeIndex: decision.resumeIndex,
-                                    selectedResumeIndex: resumeResult?.selectedResumeIndex ?? decision.resumeIndex,
-                                    sendMode: resumeResult?.mode || 'unknown',
-                                });
                                 status('发送成功');
                             }
                             // 是否需要作品集（当前关闭自动发送，仅保留原入口）
