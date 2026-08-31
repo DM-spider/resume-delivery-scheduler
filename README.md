@@ -33,8 +33,17 @@
 
 ### 1. 安装依赖
 
-```bash
-pip install -r requirements.txt
+在项目根目录创建独立虚拟环境，并始终使用该环境安装依赖：
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+如果 Windows 没有 `py` 命令，也可以用已安装 Python 的完整路径创建，例如：
+
+```powershell
+& "D:\Python\Python 3.13.4\python.exe" -m venv .venv
 ```
 
 ### 2. 准备用户配置
@@ -48,11 +57,13 @@ cp user_config.example.json user_config.json
 - `tags`：搜索关键词列表
 - `frontend.resumeIndex`：发第几份简历，从 0 开始
 - `frontend.thread`：投递阈值
+- `frontend.maxJobsPerRun`：单次运行最多打开并评分的真实 JD 数，默认 200，设为 0 表示不限量
+- `scoring.max_min_salary_k`：允许的最高起薪，默认 25K；岗位薪资区间下限高于该值时直接跳过
 
 ### 3. 启动后端
 
-```bash
-python main.py
+```powershell
+.\.venv\Scripts\python.exe main.py
 ```
 
 Windows 下也可以直接双击：
@@ -61,29 +72,43 @@ Windows 下也可以直接双击：
 start_backend.bat
 ```
 
+脚本固定使用项目 `.venv\Scripts\python.exe`，不会调用全局 Python。环境不存在或依赖不完整时，会直接显示对应的创建或安装命令。
+
 ### 4. 部署浏览器脚本
 
 把 `web_script.js` 内容粘贴到 Tampermonkey 中，然后打开 Boss 直聘页面即可。
 
 前端启动时只请求后端 `/client-config`，统一读取 `introduce`、`tags`、`frontend` 和 `schedule`；请求失败会在页面日志中提示并停止，不做旧接口回退。
 
+首次保存油猴脚本时需要允许它访问 `127.0.0.1`，否则无法调用本地评分接口。默认最多截取 200 张岗位卡片，再逐个打开详情读取真实 JD；第 200 个处理完成后自动结束前端任务。
+
 ## 工作时间与调度规则
 
 - `schedule.weekdays`：工作日，默认 `[1, 2, 3, 4, 5]`，对应周一至周五
 - `schedule.startHour` / `endHour`：执行窗口，默认 9 到 18，即 `09:00 <= 当前时间 < 18:00`
 - `schedule.minPerHour` / `maxPerHour`：每小时随机生成 10-20 个时点
-- 每个整点小时首次进入时重新生成计划；时点把该小时平均分段、每段随机取一个并按时间排序，保证分散
+- `schedule.testIntervalSeconds`：固定间隔测试开关，默认 0 表示关闭；设为正数时才临时覆盖小时策略
+- `schedule.strategies`：允许程序随机选择的小时策略，默认启用以下 5 种
+- `balanced`：均匀分散在整个小时
+- `front_loaded`：前半小时更密，随后逐渐拉长间隔
+- `back_loaded`：前半小时较疏，后半小时逐渐加密
+- `two_waves`：在小时前段和后段形成两个分散波段
+- `mixed_cadence`：穿插 10/20/30/45 秒短间隔与数分钟长间隔
+- 每个整点小时首次进入时随机选择一种启用策略，生成时点并按时间排序
 - 只有岗位评分达到 `frontend.thread` 阈值时，才等待并消费下一个未来时点
 - 一个时点最多发起一次打招呼尝试；成功、业务拒绝、网络失败或超时都不退回、不重试
 - 没有合格岗位时，已经过去的时点直接作废，不补发、不追赶
 - 非工作时间自动等待到下一个工作日 09:00
-- 页面日志面板可以随时暂停/继续；暂停期间到达的时点作废
+- 页面日志面板提供“开始/结束”按钮；结束只停止浏览器内的评分与投递任务，后端服务保持运行，再点“开始”即可继续
+- 任务结束期间到达的调度时点直接作废，不补发、不追赶
 - 调度计划只保存在当前脚本内存中，刷新页面即重置，不恢复上一次计划
+
+默认已关闭固定 10 秒测试模式，按工作日 09:00-18:00 的随机小时策略运行。临时将 `testIntervalSeconds` 设为正数时，会绕过工作日和工作时间限制，仅用于短间隔测试；处理耗时超过设定间隔时仍不会追赶或连续发送。
 
 调度日志输出在搜索页左下角日志面板：
 
 ```text
-本小时计划 14 次打招呼尝试
+本小时策略 [长短间隔混合]，计划 14 次打招呼尝试
 下一次计划时间 10:17:35
 执行本小时第 4/14 次尝试
 本时点执行失败，继续等待下一时点
@@ -112,6 +137,17 @@ start_backend.bat
 - `frontend`：浏览器端运行参数（`resumeIndex`、`thread` 等）
 - `backend`：后端评分延迟参数（`job_score_delay_base_ms`、`job_score_delay_jitter_ms`）
 - `scoring`：岗位评分关键词规则（标题强负向 / 弱负向 / 强匹配 / 中匹配，正文正向 / 辅助 / 负向）
+
+## 默认岗位方向
+
+默认搜索词与评分规则面向算法工程师、大模型工程师、AI 应用工程师、机器学习工程师、NLP、Agent 和 RAG 岗位：
+
+- 大模型算法、LLM、Agent、RAG、NLP、机器学习、模型微调等明确岗位标题直接获得较高基础分
+- 泛化的“算法工程师”只获得中等基础分，需要 JD 命中 PyTorch、LightGBM、XGBoost、RAG、微调、评测等能力后再加分
+- 金融 AI、金融大模型、财报和资本市场相关场景在技术匹配的基础上获得领域加分
+- 计算机视觉、自动驾驶、嵌入式、销售、运营等明显偏离方向直接拦截
+- Java、前端、推荐广告算法、运维等非主要方向采用扣分，不会影响匹配的大模型和 Python 后端岗位
+- 薪资先做确定性过滤：`25-40K`允许继续评分，`30-50K`因最低薪资超过 25K 直接拦截；`面议`等无法确认下限的格式不做薪资拦截
 
 ## 仓库说明
 

@@ -5,7 +5,9 @@
 // @description  goodJobs篡改猴插件
 // @match        https://www.zhipin.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=zhipin.com
-// @grant        GM_xmlhttpRequest
+// @grant        GM.xmlHttpRequest
+// @connect      127.0.0.1
+// @connect      localhost
 // ==/UserScript==
 
 (function () {
@@ -21,6 +23,7 @@
         manualFilterWaitMs: 10000, // 每轮搜索后留给用户手动筛选的时间
         roundRestartDelayMs: 2000, // 本轮结束后，启动下一轮前的缓冲时间
         maxEmptyRounds: 3, // 连续多少轮没有拿到新岗位后停止，避免空转
+        maxJobsPerRun: 200, // 单次运行最多打开并评分多少个真实 JD，0 表示不限量
         detailTimeout: 10000, // 获取职位详情超时时间
         greetTimeout: 12000, // 打招呼页回执超时时间
         preloadScrollPixels: 180, // 岗位预加载：每轮下滑像素
@@ -460,13 +463,13 @@
 
     // 日志记录
     class Logger {
-        constructor(startFn, pauseFn) {
+        constructor(startFn, stopFn) {
             // 校验函数
             if (startFn && !Function.prototype.isPrototypeOf(startFn)) {
                 throw new Error('参数错误，startFn应为函数');
             }
-            if (pauseFn && !Function.prototype.isPrototypeOf(pauseFn)) {
-                throw new Error('参数错误，pauseFn应为函数');
+            if (stopFn && !Function.prototype.isPrototypeOf(stopFn)) {
+                throw new Error('参数错误，stopFn应为函数');
             }
             // 创建元素
             const ctn = document.createElement('div');
@@ -523,16 +526,15 @@
             this.runBtn = runBtn;
             this.clearBtn = clearBtn;
             this.__startFn = startFn || (() => void 0);
-            this.__pauseFn = pauseFn || (() => void 0);
-            this.__pause = true;
+            this.__stopFn = stopFn || (() => void 0);
+            this.__running = false;
             clearBtn.addEventListener('click', () => this.clear());
             runBtn.addEventListener('click', () => {
-                this.__pause = !this.__pause;
-                if (this.__pause) {
-                    runBtn.innerText = "继续";
-                    this.__pauseFn();
+                if (this.__running) {
+                    this.setRunning(false);
+                    this.__stopFn();
                 } else {
-                    runBtn.innerText = "暂停";
+                    this.setRunning(true);
                     this.__startFn();
                 }
             });
@@ -546,6 +548,17 @@
                     foldBtn.innerText = "展开";
                 }
             });
+        }
+
+        setRunning(running) {
+            this.__running = running;
+            this.runBtn.innerText = running ? "结束" : "开始";
+        }
+
+        stop() {
+            if (!this.__running) return;
+            this.setRunning(false);
+            this.__stopFn();
         }
 
         add(message) {
@@ -584,6 +597,8 @@
             this.hourKey = '';
             this.slots = [];
             this.cursor = 0;
+            this.nextTestSlotMs = 0;
+            this.currentStrategy = null;
         }
 
         // 工作日判断
@@ -606,16 +621,80 @@
             return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}-${date.getHours()}`;
         }
 
-        // 把当前小时平均分成 count 段，每段随机取一个时点，再按时间排序
+        getStrategies() {
+            const allStrategies = [
+                { id: 'balanced', name: '均匀分散' },
+                { id: 'front_loaded', name: '前密后疏' },
+                { id: 'back_loaded', name: '前疏后密' },
+                { id: 'two_waves', name: '双波段' },
+                { id: 'mixed_cadence', name: '长短间隔混合' },
+            ];
+            const enabled = Array.isArray(this.schedule.strategies) ? this.schedule.strategies : [];
+            const filtered = allStrategies.filter((strategy) => enabled.includes(strategy.id));
+            return filtered.length ? filtered : allStrategies;
+        }
+
+        buildStratifiedOffsets(count, startMs, durationMs) {
+            const segmentMs = durationMs / count;
+            const offsets = [];
+            for (let i = 0; i < count; i++) {
+                offsets.push(startMs + i * segmentMs + Math.random() * segmentMs);
+            }
+            return offsets;
+        }
+
+        buildStrategyOffsets(strategyId, count) {
+            const hourMs = 60 * 60 * 1000;
+            if (strategyId === 'balanced') {
+                return this.buildStratifiedOffsets(count, 0, hourMs);
+            }
+            if (strategyId === 'front_loaded' || strategyId === 'back_loaded') {
+                const exponent = 1.65;
+                const offsets = [];
+                for (let i = 0; i < count; i++) {
+                    const position = (i + Math.random()) / count;
+                    const ratio = strategyId === 'front_loaded'
+                        ? Math.pow(position, exponent)
+                        : 1 - Math.pow(1 - position, exponent);
+                    offsets.push(ratio * hourMs);
+                }
+                return offsets;
+            }
+            if (strategyId === 'two_waves') {
+                const firstCount = Math.ceil(count / 2);
+                const secondCount = count - firstCount;
+                return [
+                    ...this.buildStratifiedOffsets(firstCount, 2 * 60 * 1000, 20 * 60 * 1000),
+                    ...this.buildStratifiedOffsets(secondCount, 34 * 60 * 1000, 24 * 60 * 1000),
+                ];
+            }
+
+            // 混合节奏：同一小组内间隔 10-45 秒，小组之间自然形成数分钟间隔
+            const shortGaps = [10, 20, 30, 45].map((seconds) => seconds * 1000);
+            const clusterCount = Math.ceil(count / 2);
+            const marginMs = 2 * 60 * 1000;
+            const segmentMs = (hourMs - 2 * marginMs) / clusterCount;
+            const offsets = [];
+            for (let cluster = 0; cluster < clusterCount && offsets.length < count; cluster++) {
+                const baseMs = marginMs + cluster * segmentMs + Math.random() * Math.min(segmentMs * 0.35, 90 * 1000);
+                offsets.push(baseMs);
+                if (offsets.length < count) {
+                    const shortGap = shortGaps[Math.floor(Math.random() * shortGaps.length)];
+                    offsets.push(baseMs + shortGap);
+                }
+            }
+            return offsets;
+        }
+
+        // 每小时随机选择一种节奏，并生成 10-20 个有序时点
         buildSlots(hourStartMs) {
             const minPerHour = Math.max(1, this.schedule.minPerHour || 10);
             const maxPerHour = Math.max(minPerHour, this.schedule.maxPerHour || 20);
             const count = minPerHour + Math.floor(Math.random() * (maxPerHour - minPerHour + 1));
-            const segMs = 3600 * 1000 / count;
-            const slots = [];
-            for (let i = 0; i < count; i++) {
-                slots.push(hourStartMs + i * segMs + Math.random() * segMs);
-            }
+            const strategies = this.getStrategies();
+            this.currentStrategy = strategies[Math.floor(Math.random() * strategies.length)];
+            const slots = this.buildStrategyOffsets(this.currentStrategy.id, count)
+                .map((offset) => hourStartMs + Math.min(offset, 60 * 60 * 1000 - 1));
             slots.sort((a, b) => a - b);
             return slots;
         }
@@ -632,7 +711,7 @@
             while (this.cursor < this.slots.length && this.slots[this.cursor] <= now.getTime()) {
                 this.cursor++;
             }
-            if (log) log(`本小时计划 ${this.slots.length} 次打招呼尝试`);
+            if (log) log(`本小时策略 [${this.currentStrategy.name}]，计划 ${this.slots.length} 次打招呼尝试`);
         }
 
         // 丢弃当前计划
@@ -640,6 +719,8 @@
             this.hourKey = '';
             this.slots = [];
             this.cursor = 0;
+            this.nextTestSlotMs = 0;
+            this.currentStrategy = null;
         }
 
         // 下一个整点
@@ -668,18 +749,34 @@
             return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
         }
 
-        // 等到目标时间，分片睡眠
-        async sleepUntil(targetMs) {
+        // 等到目标时间，分片睡眠；任务结束后尽快退出等待
+        async sleepUntil(targetMs, isStopped = () => false) {
             while (true) {
+                if (isStopped()) return false;
                 const remaining = targetMs - Date.now();
-                if (remaining <= 0) return;
-                await tools.asyncSleep(Math.min(remaining, 30 * 1000));
+                if (remaining <= 0) return true;
+                await tools.asyncSleep(Math.min(remaining, 500));
             }
         }
 
-        // 等待并消费下一个未来时点；暂停期间到达的时点作废
+        // 等待并消费下一个未来时点；任务结束期间到达的时点作废
         async waitForNextSlot(log, isPaused) {
             while (true) {
+                if (isPaused()) return null;
+                const testIntervalSeconds = Number(this.schedule.testIntervalSeconds) || 0;
+                if (testIntervalSeconds > 0) {
+                    const intervalMs = Math.max(1000, testIntervalSeconds * 1000);
+                    const nowMs = Date.now();
+                    if (!this.nextTestSlotMs || this.nextTestSlotMs <= nowMs) {
+                        this.nextTestSlotMs = nowMs + intervalMs;
+                    }
+                    const slotMs = this.nextTestSlotMs;
+                    log(`测试模式：下一次打招呼时间 ${this.formatTime(slotMs)}`);
+                    if (!await this.sleepUntil(slotMs, isPaused)) return null;
+                    this.nextTestSlotMs = slotMs + intervalMs;
+                    log(`测试模式：执行一次打招呼尝试，间隔 ${testIntervalSeconds} 秒`);
+                    return slotMs;
+                }
                 const now = new Date();
                 // 非工作时间：等待下一个工作日 09:00
                 if (!this.isWorkTime(now)) {
@@ -687,13 +784,13 @@
                     const nextMs = this.nextWorkStart(now.getTime());
                     const next = new Date(nextMs);
                     log(`当前不在工作时间，等待下一个工作日 ${next.getMonth() + 1}月${next.getDate()}日 ${this.formatTime(nextMs).slice(0, 5)}`);
-                    await this.sleepUntil(nextMs);
+                    if (!await this.sleepUntil(nextMs, isPaused)) return null;
                     continue;
                 }
                 this.ensurePlan(new Date(), log);
                 // 当前小时没有剩余时点：等待下一个整点重新生成计划
                 if (this.cursor >= this.slots.length) {
-                    await this.sleepUntil(this.nextHourStart(Date.now()));
+                    if (!await this.sleepUntil(this.nextHourStart(Date.now()), isPaused)) return null;
                     continue;
                 }
                 const slotMs = this.slots[this.cursor];
@@ -703,13 +800,7 @@
                     continue;
                 }
                 log(`下一次计划时间 ${this.formatTime(slotMs)}`);
-                await this.sleepUntil(slotMs);
-                // 到点后处于暂停状态：该时点作废
-                if (isPaused()) {
-                    this.cursor++;
-                    log('暂停中，本时点作废');
-                    continue;
-                }
+                if (!await this.sleepUntil(slotMs, isPaused)) return null;
                 // 消费该时点，返回给调用方执行一次打招呼流程
                 this.cursor++;
                 log(`执行本小时第 ${this.cursor}/${this.slots.length} 次尝试`);
@@ -776,11 +867,12 @@
             let schedulerWaiting = false;
             const processedJobHrefs = new Set();
 
-            // 日志启动暂停事件
+            // 日志面板的开始/结束事件只控制前端任务，后端保持运行
             const logger = new Logger(() => {
                 this.pause = false;
+                logger.add('任务已开始');
                 if (!started) return main();
-                // 主链正在等待时点，恢复后会自动继续，不重复启动
+                // 主链正在等待时点，再次开始后会自动继续，不重复启动
                 if (schedulerWaiting) return;
                 if (pendingRoundRestart) {
                     pendingRoundRestart = false;
@@ -789,6 +881,7 @@
                 loop();
             }, () => {
                 this.pause = true;
+                logger.add('任务已结束，后台服务保持运行');
             });
 
             // 开始广播
@@ -830,10 +923,14 @@
                 try {
                     const jobUl = await tools.endlessFind(SELECTORS.ZHIPIN.SEARCH.JOBLIST);
                     const aList = jobUl.querySelectorAll(SELECTORS.ZHIPIN.SEARCH.JOBHREFS);
+                    const remaining = OPTIONS.maxJobsPerRun > 0
+                        ? Math.max(0, OPTIONS.maxJobsPerRun - count - jobHrefs.length)
+                        : Number.POSITIVE_INFINITY;
                     const hrefs = Array.from(aList)
                         .map(a => a.href)
                         .slice(elsLen)
-                        .filter(href => !processedJobHrefs.has(href));
+                        .filter(href => !processedJobHrefs.has(href))
+                        .slice(0, remaining);
                     return [hrefs, aList];
                 } catch (e) {
                     logger.add('获取职位链接出错');
@@ -943,7 +1040,7 @@
                     await tools.asyncSleep(OPTIONS.roundRestartDelayMs);
                     if (this.pause) {
                         pendingRoundRestart = true;
-                        logger.add('当前已暂停，下一轮等待继续');
+                        logger.add('任务已结束，下一轮等待再次开始');
                         return;
                     }
                     await startRound();
@@ -1054,9 +1151,15 @@
             // 循环
             const loop = async () => {
                 try {
-                    // 如果暂停，则跳过
+                    // 如果任务已结束，则停止当前前端执行链
                     if (this.pause) {
-                        logger.add('暂停中...');
+                        logger.add('任务当前已结束');
+                        return;
+                    }
+                    if (OPTIONS.maxJobsPerRun > 0 && count >= OPTIONS.maxJobsPerRun) {
+                        logger.stop();
+                        logger.add(`已完成 ${count} 个真实 JD 的试运行，程序自动结束`);
+                        logger.add('确认结果后，可将 frontend.maxJobsPerRun 改为 0 解除上限');
                         return;
                     }
                     logger.divider();
@@ -1079,6 +1182,7 @@
                     logger.add(`| 浏览: ${++count} | 剩余: ${jobHrefs.length} | 平均: ${(diff / count).toFixed(0)}s | 耗时: ${convertTime(diff)} |`);
                     logger.add(`正在获取职位详情`);
                     const jobInfo = await getJobInfo(href);
+                    if (this.pause) return;
                     if (jobInfo.skip) {
                         logger.add(`职位跳过: ${jobInfo.skipReason}`);
                         return loop();
@@ -1092,6 +1196,7 @@
                     // 否则发送消息计算匹配度
                     logger.add(`开始计算职位 [${jobInfo.title}] 的匹配度`);
                     const decision = await api.getJobScore(jobInfo.title, jobInfo.salary, jobInfo.detail);
+                    if (this.pause) return;
                     logger.add(`匹配度: ${decision.score} | 简历索引: ${decision.resumeIndex}`);
                     // 如果分数达到阈值，等待当前小时的下一个时点再打招呼
                     if (decision.score >= OPTIONS.thread) {
@@ -1100,14 +1205,20 @@
                             return loop();
                         }
                         schedulerWaiting = true;
+                        let scheduledSlot = null;
                         try {
-                            await scheduler.waitForNextSlot((msg) => logger.add(msg), () => this.pause);
+                            scheduledSlot = await scheduler.waitForNextSlot((msg) => logger.add(msg), () => this.pause);
                         } finally {
                             schedulerWaiting = false;
+                        }
+                        if (scheduledSlot === null) {
+                            if (!this.pause) loop();
+                            return;
                         }
                         logger.add(`正在给职位 [${jobInfo.title}] 发送打招呼消息`);
                         // 判断是否有提醒返回
                         addToChatList(jobInfo.addUrl).then(() => {
+                            if (this.pause) return;
                             armPendingGreet(jobInfo.title, decision);
                             tools.openTabNSetTimestamp(jobInfo.chatUrl, this.targets.chatGreet);
                         }).catch(() => {
@@ -1128,10 +1239,21 @@
             };
 
             const preloadJobs = async () => {
-                logger.add('开始慢速预加载岗位列表');
+                const targetCount = OPTIONS.maxJobsPerRun > 0
+                    ? Math.max(0, OPTIONS.maxJobsPerRun - count)
+                    : Number.POSITIVE_INFINITY;
+                logger.add(OPTIONS.maxJobsPerRun > 0
+                    ? `准备加载最多 ${targetCount} 张候选岗位卡片`
+                    : '开始慢速预加载岗位列表');
                 let stableRounds = 0;
                 let lastCount = 0;
                 let lastScrollY = -1;
+                const initialJobUl = await tools.endlessFind(SELECTORS.ZHIPIN.SEARCH.JOBLIST).catch(() => null);
+                const initialCount = initialJobUl ? initialJobUl.querySelectorAll(SELECTORS.ZHIPIN.SEARCH.JOBHREFS).length : 0;
+                if (initialCount >= targetCount) {
+                    logger.add(`当前列表已有 ${initialCount} 张岗位卡片，无需继续滚动预加载`);
+                    return;
+                }
                 for (let round = 1; round <= OPTIONS.preloadMaxRounds; round++) {
                     const jobUl = await tools.endlessFind(SELECTORS.ZHIPIN.SEARCH.JOBLIST).catch(() => null);
                     const currentCount = jobUl ? jobUl.querySelectorAll(SELECTORS.ZHIPIN.SEARCH.JOBHREFS).length : 0;
@@ -1141,7 +1263,13 @@
                     const afterJobUl = document.querySelector(SELECTORS.ZHIPIN.SEARCH.JOBLIST);
                     const afterCount = afterJobUl ? afterJobUl.querySelectorAll(SELECTORS.ZHIPIN.SEARCH.JOBHREFS).length : currentCount;
                     const afterY = window.scrollY;
-                    logger.add(`预加载第 ${round} 轮：岗位 ${currentCount} -> ${afterCount}`);
+                    if (round === 1 || afterCount !== currentCount || round % 10 === 0) {
+                        logger.add(`预加载第 ${round} 轮：岗位 ${currentCount} -> ${afterCount}`);
+                    }
+                    if (afterCount >= targetCount) {
+                        logger.add(`已加载不少于 ${targetCount} 张候选岗位卡片，停止预加载`);
+                        break;
+                    }
                     if (afterCount > lastCount || afterY > lastScrollY) {
                         stableRounds = 0;
                     } else {

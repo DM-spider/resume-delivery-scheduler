@@ -2,20 +2,40 @@ from config import Config
 import re
 
 
-def __extract_job_fields(job: str) -> tuple[str, str]:
-    """从脚本上传的文本中提取岗位名称和职位描述。"""
+def __extract_job_fields(job: str) -> tuple[str, str, str]:
+    """从脚本上传的文本中提取岗位名称、薪资和职位描述。"""
     sections = [section.strip() for section in re.split(r'\n\s*\n', job) if section.strip()]
     title = ''
+    salary = ''
     detail = job.strip()
     if sections:
         title_lines = sections[0].splitlines()
         if len(title_lines) > 1:
             title = '\n'.join(title_lines[1:]).strip()
+    if len(sections) >= 2:
+        salary_lines = sections[1].splitlines()
+        if len(salary_lines) > 1:
+            salary = '\n'.join(salary_lines[1:]).strip()
     if len(sections) >= 3:
-        detail_lines = sections[2].splitlines()
+        detail_lines = '\n\n'.join(sections[2:]).splitlines()
         if len(detail_lines) > 1:
             detail = '\n'.join(detail_lines[1:]).strip()
-    return title, detail
+    return title, salary, detail
+
+
+def __extract_salary_min_k(salary: str) -> float | None:
+    """提取 Boss 常见 K 制月薪的区间下限；无法确认时不做薪资拦截。"""
+    normalized = salary.replace(',', '').strip()
+    range_match = re.search(
+        r'(\d+(?:\.\d+)?)\s*(?:-|~|～|—|–|至)\s*\d+(?:\.\d+)?\s*[kK]',
+        normalized,
+    )
+    if range_match:
+        return float(range_match.group(1))
+    single_match = re.search(r'(\d+(?:\.\d+)?)\s*[kK](?:\s*(?:以上|起|起薪))?', normalized)
+    if single_match:
+        return float(single_match.group(1))
+    return None
 
 
 def __normalize_text(text: str) -> str:
@@ -33,11 +53,38 @@ def __find_matches(text: str, keyword_scores: dict[str, int]) -> list[tuple[str,
 
 def evaluateJobMatch(job: str):
     """返回岗位匹配明细，便于日志排查。"""
-    title, detail = __extract_job_fields(job)
+    title, salary, detail = __extract_job_fields(job)
+    salary_min_k = __extract_salary_min_k(salary)
+    if salary_min_k is not None and salary_min_k > Config.max_min_salary_k:
+        return {
+            'title': title,
+            'salary': salary,
+            'salary_min_k': salary_min_k,
+            'detail': detail,
+            'matched_field': 'salary_negative',
+            'keyword': f'{salary_min_k:g}K',
+            'score': 0,
+            'blocked': True,
+            'title_score': 0,
+            'detail_score': 0,
+            'penalty_score': 0,
+            'title_penalty_score': 0,
+            'combo_score': 0,
+            'final_score': 0,
+            'title_match_level': 'none',
+            'title_matches': [],
+            'title_penalty_matches': [],
+            'detail_infra_matches': [],
+            'detail_support_matches': [],
+            'detail_negative_matches': [],
+            'reason': f'岗位最低薪资 {salary_min_k:g}K 超过限制 {Config.max_min_salary_k:g}K',
+        }
     title_block_matches = __find_matches(title, Config.title_block_keywords)
     if title_block_matches:
         return {
             'title': title,
+            'salary': salary,
+            'salary_min_k': salary_min_k,
             'detail': detail,
             'matched_field': 'title_negative',
             'keyword': title_block_matches[0][0],
@@ -94,8 +141,16 @@ def evaluateJobMatch(job: str):
         combo_score += 10
     if title_match_level == 'medium' and detail_match_count >= 3:
         combo_score += 10
-    if ('devops' in title_normalized or 'sre' in title_normalized) and infra_keywords.intersection({'k8s', 'kubernetes', 'docker', 'prometheus'}):
+    target_title_terms = ('大模型', 'llm', 'ai', '算法', '机器学习', '深度学习', 'nlp', '智能体', 'agent', 'rag')
+    target_detail_terms = {
+        '大模型', 'llm', '智能体', 'agent', 'ai agent', 'rag', '混合检索', 'bge', 'rerank',
+        'lora', 'qlora', 'peft', 'pytorch', 'lightgbm', 'xgboost', 'scikit-learn', 'sklearn',
+    }
+    if any(term in title_normalized for term in target_title_terms) and infra_keywords.intersection(target_detail_terms):
         combo_score += 10
+    financial_terms = ('金融', '银行', '证券', '基金', '财报', '资本市场')
+    if any(term in title or term in detail for term in financial_terms) and infra_keywords.intersection(target_detail_terms):
+        combo_score += 8
 
     raw_score = title_score + detail_score + combo_score - title_penalty_score - penalty_score
     if title_match_level == 'none':
@@ -120,6 +175,8 @@ def evaluateJobMatch(job: str):
 
     return {
         'title': title,
+        'salary': salary,
+        'salary_min_k': salary_min_k,
         'detail': detail,
         'matched_field': matched_field,
         'keyword': keyword,

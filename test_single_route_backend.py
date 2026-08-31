@@ -1,5 +1,6 @@
 import asyncio
 import json
+import subprocess
 import sys
 import types
 import unittest
@@ -11,7 +12,7 @@ USER_CONFIG_PATH = ROOT / 'user_config.json'
 ORIGINAL_USER_CONFIG = USER_CONFIG_PATH.read_text(encoding='utf-8') if USER_CONFIG_PATH.exists() else None
 TEST_USER_CONFIG = {
     'introduce': '测试用打招呼语',
-    'tags': ['AI产品工程师', 'AI应用工程师'],
+    'tags': ['算法工程师', '大模型工程师', 'AI应用工程师'],
     'backend': {
         'job_score_delay_base_ms': 0,
         'job_score_delay_jitter_ms': 0,
@@ -34,44 +35,11 @@ TEST_USER_CONFIG = {
         'preloadActivateCardEvery': 0,
         'preloadActivateCardWaitMs': 250,
     },
-    'scoring': {
-        'title_block_keywords': {
-            '算法': 100,
-            'c语言': 100,
-        },
-        'title_penalty_keywords': {
-            '运维': 30,
-            'langchain': 16,
-        },
-        'title_strong_keywords': {
-            'ai产品工程师': 98,
-            'ai应用工程师': 94,
-            '智能体': 94,
-            'vibe coding': 96,
-        },
-        'title_medium_keywords': {
-            'ai': 78,
-            'workflow': 74,
-            'prompt': 72,
-        },
-        'detail_infra_keywords': {
-            'claude code': 14,
-            'codex': 12,
-            '智能体': 10,
-            '工作流': 8,
-        },
-        'detail_support_keywords': {
-            'python': 8,
-            '部署': 5,
-            '代码生成': 5,
-        },
-        'detail_negative_keywords': {
-            'langchain': 8,
-            '算法': 14,
-            'c语言': 16,
-        },
-    },
 }
+
+
+def build_job(title: str, detail: str, salary: str = '20-30K') -> str:
+    return f'# 职位名称\n{title}\n\n# 薪资范围\n{salary}\n\n# 职位描述\n{detail}'
 
 
 def install_fastapi_stub():
@@ -142,12 +110,189 @@ class SingleRouteBackendTests(unittest.TestCase):
         self.assertEqual(schedule['endHour'], 18)
         self.assertEqual(schedule['minPerHour'], 10)
         self.assertEqual(schedule['maxPerHour'], 20)
+        self.assertEqual(schedule['testIntervalSeconds'], 0)
+        self.assertEqual(schedule['strategies'], [
+            'balanced',
+            'front_loaded',
+            'back_loaded',
+            'two_waves',
+            'mixed_cadence',
+        ])
+
+    def test_client_config_limits_run_to_two_hundred_real_jobs(self):
+        from config import Config
+
+        self.assertEqual(Config.get_client_config()['frontend']['maxJobsPerRun'], 200)
+
+    def test_userscript_allows_local_backend_connection(self):
+        script = (ROOT / 'web_script.js').read_text(encoding='utf-8').lower()
+
+        self.assertIn('// @connect      127.0.0.1', script)
+        self.assertIn('maxjobsperrun: 200', script)
+
+    def test_userscript_exposes_start_and_stop_controls(self):
+        script = (ROOT / 'web_script.js').read_text(encoding='utf-8')
+
+        self.assertIn('runBtn.innerText = "开始"', script)
+        self.assertIn('runBtn.innerText = running ? "结束" : "开始"', script)
+        self.assertIn('logger.stop()', script)
+        self.assertIn('if (isPaused()) return null', script)
+        self.assertIn('if (scheduledSlot === null)', script)
+
+    def test_userscript_randomly_selects_five_hourly_strategies(self):
+        script = (ROOT / 'web_script.js').read_text(encoding='utf-8')
+
+        for strategy_id in [
+            'balanced',
+            'front_loaded',
+            'back_loaded',
+            'two_waves',
+            'mixed_cadence',
+        ]:
+            self.assertIn(f"id: '{strategy_id}'", script)
+        self.assertIn('Math.floor(Math.random() * strategies.length)', script)
+        self.assertIn('本小时策略', script)
+
+    def test_all_hourly_strategies_generate_sorted_in_hour_slots(self):
+        script = (ROOT / 'web_script.js').read_text(encoding='utf-8')
+        class_start = script.index('    class HourlyScheduler')
+        class_end = script.index('    // boss 直聘', class_start)
+        scheduler_source = script[class_start:class_end]
+        node_script = f"""
+const tools = {{ asyncSleep: async () => undefined }};
+{scheduler_source}
+const strategyIds = ['balanced', 'front_loaded', 'back_loaded', 'two_waves', 'mixed_cadence'];
+const scheduler = new HourlyScheduler({{ minPerHour: 10, maxPerHour: 20, strategies: strategyIds }});
+for (const strategyId of strategyIds) {{
+    for (const count of [10, 15, 20]) {{
+        const offsets = scheduler.buildStrategyOffsets(strategyId, count);
+        if (offsets.length !== count) throw new Error(`${{strategyId}} count mismatch`);
+        if (offsets.some((offset) => offset < 0 || offset >= 3600000)) throw new Error(`${{strategyId}} out of hour`);
+        if (offsets.some((offset, index) => index > 0 && offset < offsets[index - 1])) throw new Error(`${{strategyId}} not sorted`);
+    }}
+}}
+const originalRandom = Math.random;
+Math.random = () => 0;
+const mixedOffsets = scheduler.buildStrategyOffsets('mixed_cadence', 10);
+Math.random = originalRandom;
+if (!mixedOffsets.some((offset, index) => index > 0 && offset - mixedOffsets[index - 1] === 10000)) {{
+    throw new Error('mixed_cadence has no 10 second gap');
+}}
+"""
+        result = subprocess.run(
+            ['node', '-e', node_script],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_search_tags_target_algorithm_and_llm_roles(self):
+        from config import Config
+
+        self.assertEqual(Config.tags[:3], ['算法工程师', '大模型工程师', 'AI应用工程师'])
+
+    def test_llm_algorithm_role_scores_high(self):
+        from core import evaluateJobMatch
+
+        job = build_job(
+            '大模型算法工程师',
+            '负责 Agent 智能体、RAG 混合检索、BGE 重排序、QLoRA 微调、PyTorch 模型评测与 Python 服务化。',
+        )
+        result = evaluateJobMatch(job)
+
+        self.assertFalse(result['blocked'])
+        self.assertGreaterEqual(result['score'], 90)
+
+    def test_generic_algorithm_role_requires_relevant_jd(self):
+        from core import evaluateJobMatch
+
+        job = build_job(
+            '算法工程师',
+            '使用 Scikit-learn、LightGBM、XGBoost 和 PyTorch 完成特征工程、分类回归、时序验证及模型评估。',
+        )
+        result = evaluateJobMatch(job)
+
+        self.assertFalse(result['blocked'])
+        self.assertGreaterEqual(result['score'], 70)
+
+    def test_generic_algorithm_role_without_relevant_jd_stays_below_threshold(self):
+        from core import evaluateJobMatch
+
+        job = build_job('算法工程师', '负责跨部门需求沟通、项目进度跟踪和业务文档整理。')
+        result = evaluateJobMatch(job)
+
+        self.assertFalse(result['blocked'])
+        self.assertLess(result['score'], 50)
+
+    def test_computer_vision_algorithm_role_is_blocked(self):
+        from core import evaluateJobMatch
+
+        job = build_job('计算机视觉算法工程师', '负责 YOLO 目标检测、图像分割和 OpenCV 工程优化。')
+        result = evaluateJobMatch(job)
+
+        self.assertTrue(result['blocked'])
+        self.assertEqual(result['score'], 0)
+
+    def test_salary_floor_equal_to_limit_is_allowed(self):
+        from core import evaluateJobMatch
+
+        job = build_job(
+            '大模型算法工程师',
+            '负责 Agent、RAG、QLoRA 与 PyTorch 模型评测。',
+            salary='25-40K·14薪',
+        )
+        result = evaluateJobMatch(job)
+
+        self.assertFalse(result['blocked'])
+        self.assertEqual(result['salary_min_k'], 25)
+        self.assertGreaterEqual(result['score'], 90)
+
+    def test_salary_floor_above_limit_is_blocked(self):
+        from core import evaluateJobMatch
+
+        job = build_job(
+            '大模型算法工程师',
+            '负责 Agent、RAG、QLoRA 与 PyTorch 模型评测。',
+            salary='25.1-40K',
+        )
+        result = evaluateJobMatch(job)
+
+        self.assertTrue(result['blocked'])
+        self.assertEqual(result['matched_field'], 'salary_negative')
+        self.assertEqual(result['score'], 0)
+        self.assertIn('超过限制 25K', result['reason'])
+
+    def test_unparseable_salary_is_not_blocked(self):
+        from core import evaluateJobMatch
+
+        job = build_job(
+            'AI应用工程师',
+            '负责 Agent、RAG、提示词工程与 Python 服务化。',
+            salary='面议',
+        )
+        result = evaluateJobMatch(job)
+
+        self.assertFalse(result['blocked'])
+        self.assertIsNone(result['salary_min_k'])
+
+    def test_start_script_has_no_author_specific_python_path(self):
+        script = (ROOT / 'start_backend.bat').read_text(encoding='utf-8').lower()
+
+        self.assertNotIn(r'c:\users\czc', script)
+        self.assertIn(r'.venv\scripts\python.exe', script)
+        self.assertNotIn('where py', script)
+        self.assertNotIn('where python', script)
+        self.assertIn('-m pip install -r requirements.txt', script)
 
     def test_single_route_delivery_uses_fixed_introduce_and_resume_index(self):
         from core import evaluateSingleRouteDelivery
         from config import Config
 
-        job = '# 职位名称\nAI产品工程师\n\n# 薪资范围\n20-30K\n\n# 职位描述\n负责 Claude Code、Codex、智能体、工作流与代码生成调试部署'
+        job = build_job('AI应用工程师', '负责 Agent、RAG、提示词工程、Python 服务化与部署')
         result = evaluateSingleRouteDelivery(job)
 
         self.assertEqual(result['introduce'], Config.introduce)
@@ -160,7 +305,7 @@ class SingleRouteBackendTests(unittest.TestCase):
         install_fastapi_stub()
         from main import get_job_score
 
-        job = '# 职位名称\nAI产品工程师\n\n# 薪资范围\n20-30K\n\n# 职位描述\n负责 Claude Code、Codex、智能体、工作流与代码生成调试部署'
+        job = build_job('AI应用工程师', '负责 Agent、RAG、提示词工程、Python 服务化与部署')
         result = asyncio.run(get_job_score(job))
 
         self.assertIn('score', result)

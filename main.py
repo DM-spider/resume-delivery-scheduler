@@ -29,12 +29,15 @@ async def get_job_score(job: str = Body(..., description="职位信息")):
         'detail': '职位描述',
         'none': '未命中',
         'title_negative': '标题负向拦截',
+        'salary_negative': '薪资下限拦截',
     }
     print(
         f"[{time_str}] /get-job-score | "
         f"title={title} | "
         f"matched={matched_field_map.get(result['matched_field'], result['matched_field'])} | "
         f"keyword={keyword} | "
+        f"salary={result['salary'] or '未识别'} | "
+        f"salary_min_k={result['salary_min_k']} | "
         f"title_score={result['title_score']} | "
         f"detail_score={result['detail_score']} | "
         f"combo_score={result['combo_score']} | "
