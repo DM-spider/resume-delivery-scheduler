@@ -58,9 +58,6 @@
                 HISTORYCTN: '.chat-message', // 聊天记录容器
                 USEFULMSG: '.item-friend,.item-myself', // 有效的文字聊天记录项
                 MSGCONTENT: '.message-content .text', // 聊天记录内容
-                // 职位
-                JOBEL: '*[ka=geek_chat_job_detail]', // 职位元素
-                JOBCITY: '.city', // 职位城市
                 // 简历
                 RESUMESEND: '.toolbar-btn.tooltip.tooltip-top', // 简历发送按钮
                 RESUMEMODAL: '.panel-resume', // 简历发送弹窗，有的时候简历按钮点击会出来一个小弹窗
@@ -737,7 +734,6 @@
                 STATUS: "status",
                 RUN: 'run',
                 DIVIDER: 'divider',
-                INTRODUCE: 'introduce',
                 HEART_BEAT: 'heart-beat',
                 // 聊天页和职位详情页
                 GET_JOB_INFO: 'get-job-info',
@@ -803,16 +799,6 @@
                     if (from === this.targets.chat) {
                         logger.add(data);
                     }
-                });
-                // 发送自我介绍
-                this.broadcast.on(this.bcTypes.INTRODUCE, (from, data) => {
-                    this.broadcast.reply(
-                        from,
-                        this.bcTypes.INTRODUCE,
-                        { introduce: this.introduce },
-                        data.requestId,
-                        data.responseType
-                    );
                 });
                 // 分割线
                 this.broadcast.on(this.bcTypes.DIVIDER, () => {
@@ -1292,29 +1278,14 @@
                 this.broadcast.send(this.targets.search, this.bcTypes.GET_JOB_INFO, jobInfo);
             };
 
-            // 来自聊天页
-            const fromChatPage = () => {
-                // 把职位信息发送给聊天页
-                this.broadcast.send(
-                    this.targets.chat,
-                    this.bcTypes.GET_JOB_INFO,
-                    jobInfo
-                ).then(() => {
-                    window.close();
-                });
-            };
-
             // 主函数
             const main = () => {
                 // 判断来源
                 const now = new Date().getTime();
                 const isFromSearch = now - tools.getTimestamp(this.targets.detail) < OPTIONS.timestampTimeout && window.name === this.targets.detail;
-                const isFromChat = now - tools.getTimestamp(this.targets.chat) < OPTIONS.timestampTimeout;
 
                 if (isFromSearch) {
                     fromSearchPage();
-                } else if (isFromChat) {
-                    fromChatPage();
                 }
             };
             main();
@@ -1395,67 +1366,24 @@
                             content: msgBox.innerText,
                         });
                     });
-                    // 提取简历，作品集状态
-                    let needResume = 0;
-                    let needWorks = 0;
+                    // 判断是否发过简历：聊天记录出现“点击预览附件简历”即视为已发送
                     let resumeSended = false;
-                    let worksSended = false;
-                    let confirmAddr = false;
-                    // 判断聊天字眼中是否有相关信息
-                    msgs.reverse();
-                    let recent = '';
-                    for (const msg of msgs) {
-                        if (msg.role !== 'user') {
-                            break;
+                    ctn.querySelectorAll('.boss-green').forEach(el => {
+                        if (el.innerText.indexOf('点击预览附件简历') !== -1) {
+                            resumeSended = true;
                         }
-                        recent += msg.content;
-                    }
-                    msgs.reverse();
-                    if (recent.indexOf('简历') !== -1) {
-                        needResume = 1;
-                    }
-                    if (recent.indexOf('作品') !== -1) {
-                        needWorks = 1;
-                    }
-                    // 判断是否有过明确弹窗
-                    const rlis = lis.reverse();
-                    for (const li of rlis) {
-                        if (li.classList.contains('item-myself')) {
-                            break;
+                    });
+                    // 判断是否存在 Boss 内置的索要附件简历请求卡片
+                    let hasResumeRequestCard = false;
+                    ctn.querySelectorAll('.boss-green').forEach(el => {
+                        if (el.innerText.indexOf('我想要一份您的附件简历') !== -1) {
+                            hasResumeRequestCard = true;
                         }
-                        const bossGreen = li.querySelector('.boss-green');
-                        const dialog = li.querySelector('.item-dialog');
-                        if (bossGreen) {
-                            const t = bossGreen.innerText;
-                            if (t.indexOf('我想要一份您的附件简历，您是否同意\n拒绝\n同意') !== -1) {
-                                needResume = 2;
-                            }
-                        } else if (dialog) {
-                            const t = dialog.querySelector('.msg-dialog-title').innerText;
-                            if (t.indexOf('您是否接受此工作地点?') !== -1) {
-                                confirmAddr = true;
-                            }
-                        }
-                    }
-                    // 判断是否发过简历
-                    const bossGreen = ctn.querySelectorAll('.boss-green');
-                    if (bossGreen.length) {
-                        bossGreen.forEach(el => {
-                            const t = el.innerText;
-                            if (t.indexOf('点击预览附件简历') !== -1) {
-                                resumeSended = true;
-                            }
-                        });
-                    }
+                    });
                     return {
                         msgs,
-                        needResume,
-                        needWorks,
                         resumeSended,
-                        worksSended,
-                        confirmAddr,
-                        talked: !msgs.every(d => d.role === 'user'),
-                        jobEl: (await tools.endlessFind(SELECTORS.ZHIPIN.CHAT.JOBEL)).querySelector(SELECTORS.ZHIPIN.CHAT.JOBCITY)
+                        hasResumeRequestCard,
                     };
                 };
 
@@ -1473,7 +1401,7 @@
                 return await getMsgs();
             };
 
-            // 发送简历
+            // 发送简历：只负责发送附件，成功后由调用方单独回复
             const sendResume = async (resumeIndex = OPTIONS.resumeIndex) => {
                 const sendBtn = await tools.endlessFind(SELECTORS.ZHIPIN.CHAT.RESUMESEND);
                 sendBtn.click();
@@ -1482,7 +1410,6 @@
                 const smallDialog = await tools.endlessFind(SELECTORS.ZHIPIN.CHAT.RESUMEMODAL).catch(() => null);
                 if (smallDialog) {
                     smallDialog.querySelector(SELECTORS.ZHIPIN.CHAT.RESUMEMODALCONFIRM).click();
-                    await sendMsg('已发送，请查收');
                     return {
                         mode: 'small_dialog',
                         selectedResumeIndex: resumeIndex,
@@ -1499,16 +1426,49 @@
                 resume.click();
                 await tools.asyncSleep(300);
                 confirm.click();
-                await sendMsg('已发送，请查收');
                 return {
                     mode: 'resume_list',
                     selectedResumeIndex: fallbackIndex,
                 };
             };
 
-            // 发送作品集
-            const sendWorks = async () => {
-                logger.add('sendWks');
+            // 判断最新 HR 消息是否明确索要简历：否定规则优先
+            const isExplicitResumeRequest = (message, hasRequestCard) => {
+                // Boss 内置索要附件简历卡片直接视为明确请求
+                if (hasRequestCard) return true;
+                if (typeof message !== 'string' || !message.trim()) return false;
+                // 标准化空格和常见标点
+                const text = message
+                    .replace(/\s+/g, '')
+                    .replace(/[，。！？、,.!?;；:：~～“”‘’"'（）()【】\[\]吗吧呢啊呀哦]/g, '');
+                // 否定表达优先
+                const negativePatterns = [
+                    '不用发简历', '不需要简历', '不需要', '不用简历', '无需简历', '不必发简历', '不用发', '不要简历', '不要发', '别发简历', '别发',
+                    '暂不需要', '暂时不用', '先不用', '以后再说',
+                    '简历不匹配', '简历不太匹配', '不太匹配', '不匹配',
+                    '暂不考虑', '不考虑', '不合适', '不太合适', '不感兴趣', '暂无需求', '不招了', '已招到', '已经招到', '招满了',
+                ];
+                for (const pattern of negativePatterns) {
+                    if (text.indexOf(pattern) !== -1) return false;
+                }
+                // 明确请求表达
+                const requestPatterns = [
+                    '发一份简历', '发下简历', '发一下简历', '发个简历', '发简历', '发送简历', '发送一下简历',
+                    '发一份您的简历', '发一份你的简历', '发一下您的简历', '发一下你的简历', '发您的简历', '发你的简历',
+                    '简历发我', '简历发一下', '简历发过来', '简历发给我', '简历发来看看', '简历发来',
+                    '您的简历发我', '你的简历发我', '把您的简历发', '把你的简历发',
+                    '简历看一下', '简历看下', '简历看看', '发我简历', '给我简历', '给我一份简历',
+                    '来一份简历', '来份简历', '要一份简历', '需要简历', '需要一份简历', '收一份简历', '收下简历',
+                    '请发简历', '请提供简历', '麻烦发简历', '麻烦把简历', '把简历发',
+                    '简历方便发', '简历麻烦发', '简历请发', '发我一下简历',
+                    '想看简历', '想看下简历', '想看一下简历', '想看看简历', '看下简历', '看一下简历', '看看简历',
+                    '看下你的简历', '看一下你的简历', '看看你的简历', '想看你的简历',
+                    '发附件简历', '附件简历发', '投一下简历', '发我一份简历',
+                ];
+                for (const pattern of requestPatterns) {
+                    if (text.indexOf(pattern) !== -1) return true;
+                }
+                return false;
             };
 
             let logger = null;
@@ -1529,15 +1489,8 @@
 
             // 聊天
             const chat = async () => {
-                // api
-                const api = new Api();
                 // 开始广播
                 startBroadcast(this.targets.chat);
-                // 获取默认自我介绍（兜底）
-                const defaultIntroduce = (await this.broadcast.sendAndReceive(
-                    this.targets.search,
-                    this.bcTypes.INTRODUCE,
-                )).introduce;
                 // 心跳
                 let count = 0;
                 const loop = async () => {
@@ -1583,58 +1536,24 @@
                             name.click();
                             // 获取聊天记录信息
                             const chatInfo = await getChatInfo();
-                            // 如果最新的是我的回复
-                            const lastMsg = chatInfo.msgs.slice(-1)[0];
-                            if (lastMsg && lastMsg.role === 'assistant') continue;
-                            // 如果以前没聊过
-                            if (!chatInfo.talked) {
-                                localStorage.setItem(this.targets.chat, new Date().getTime());
-                                chatInfo.jobEl.click();
-                                status(`正在获取职位详情`);
-                                const jobInfo = await this.broadcast.receive(this.targets.detail, this.bcTypes.GET_JOB_INFO);
-                                // 获取职位匹配度
-                                status(`开始计算职位 [${jobInfo.title}] 的匹配度`);
-                                const decision = await api.getJobScore(jobInfo.title, jobInfo.salary, jobInfo.detail);
-                                status(`匹配度: ${decision.score} | 简历索引: ${decision.resumeIndex}`);
-                                // 如果分数达到阈值并且未聊过天，打个招呼
-                                if (decision.score >= OPTIONS.thread && !chatInfo.msgs.length) {
-                                    status(`正在给职位 [${jobInfo.title}] 发送打招呼消息`);
-                                    try {
-                                        await sendMsg(decision.introduce || defaultIntroduce);
-                                        status(`打招呼成功`);
-                                    } catch (e) {
-                                        status(`打招呼失败: ${e}`);
-                                    }
-                                    continue;
-                                }
-                                // 未达到阈值，直接下一个
-                                else if (decision.score < OPTIONS.thread) {
-                                    await sendMsg('不好意思，不太合适哈，祝早日找到合适的人选。')
-                                    continue;
-                                }
+                            const lastMsg = chatInfo.msgs.at(-1);
+                            // 已发过简历的会话不再执行任何自动处理
+                            if (chatInfo.resumeSended) {
+                                status('已发过简历，该会话不再自动处理');
+                                continue;
                             }
-                            let isChat = true;
-                            // 只要对方发来新消息且还没发过简历，就直接发送简历，不再调用大模型聊天
-                            if (!chatInfo.resumeSended) {
-                                isChat = false;
-                                localStorage.setItem(this.targets.chat, new Date().getTime());
-                                chatInfo.jobEl.click();
-                                status(`正在获取职位详情（用于确定简历）`);
-                                const jobInfo = await this.broadcast.receive(this.targets.detail, this.bcTypes.GET_JOB_INFO);
-                                const decision = await api.getJobScore(jobInfo.title, jobInfo.salary, jobInfo.detail);
-                                status(`检测到新消息，直接发送简历（简历索引 ${decision.resumeIndex}）`);
-                                const resumeResult = await sendResume(decision.resumeIndex);
-                                status('发送成功');
+                            // 只有最新 HR 消息明确索要简历，或存在 Boss 索要简历卡片时才发送
+                            const hasExplicitTextRequest = lastMsg
+                                && lastMsg.role === 'user'
+                                && isExplicitResumeRequest(lastMsg.content, false);
+                            if (!hasExplicitTextRequest && !chatInfo.hasResumeRequestCard) {
+                                status('未检测到明确索要简历，不自动处理');
+                                continue;
                             }
-                            // 是否需要作品集（当前关闭自动发送，仅保留原入口）
-                            if (chatInfo.needWorks && !chatInfo.worksSended) {
-                                isChat = false;
-                                status('检测到作品集相关消息，当前未开启自动发送作品集');
-                            }
-                            // 聊天
-                            if (isChat) {
-                                status('已发过简历，跳过自动聊天');
-                            }
+                            status(`正在发送简历（简历索引 ${OPTIONS.resumeIndex}）`);
+                            await sendResume(OPTIONS.resumeIndex);
+                            await sendMsg('发给您了哈');
+                            status('发送成功');
                         } catch (e) {
                             status('回复某条消息出错');
                         }
