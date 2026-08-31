@@ -7,55 +7,27 @@
 - 单方向投递
 - 规则筛选岗位
 - 固定打招呼
-- 收到 Boss 新消息后直接发送简历
-- 默认不继续自动聊天
+- 工作日分时投递
+- HR 明确索要时才自动发送一次简历
 
-它不是多招聘平台框架，不是复杂多轮自动聊天助手，也不是招聘 SaaS。
-
-## 适合什么方向
-
-当前仓库模板默认更适合这些岗位：
-- AI 产品工程师
-- AI 应用工程师
-- AI Agent / 智能体
-- 工作流工程师
-- AI Native / Vibe Coding / 大模型应用落地类岗位
-
-当前评分逻辑的核心偏好：
-- 标题只做弱信号
-- JD 正文里的真实技术要求、工具链、工作流是强信号
-- 更关注 Claude Code、Cursor、Codex、Agent、Workflow、Prompt，以及需求到调试部署上线的闭环能力
-
-不适合作为主目标方向的岗位：
-- 传统算法训练 / 模型研发
-- 传统运维 / SRE / DevOps
-- 销售 / 运营
-- 纯 C/C++/Go 底层岗
+它不是多招聘平台框架，不是自动聊天助手，也不是招聘 SaaS。
 
 ## 现在能做什么
 
-当前主链能力：
-- 在 Boss 直聘岗位列表里轮换搜索关键词
-- 对岗位做规则打分
-- 达到阈值后自动打招呼
-- 收到 Boss 新消息后直接发送指定简历
-- 连续多轮没有新岗位时自动切换关键词继续挂机
+- 在 Boss 直聘岗位列表里按 `tags` 顺序轮换搜索关键词
+- 对岗位做本地规则打分，不依赖任何大模型
+- 达到阈值后等到当前小时的下一个随机时点，再执行一次固定打招呼流程
+- HR 明确索要简历时自动发送一次附件简历，并只回复一次“发给您了哈”
 - 遇到超时、详情异常、打招呼异常时自动恢复
-
-## 演示视频
-
-- B 站演示视频：https://www.bilibili.com/video/BV1MyX6BFEp3
 
 ## 项目结构
 
-- `main.py`：FastAPI 后端入口
-- `core.py`：规则评分主逻辑 + 遗留聊天能力
+- `main.py`：FastAPI 后端入口，只有 `/client-config` 和 `/get-job-score` 两个接口
+- `core.py`：岗位规则评分主逻辑
 - `config.py`：配置加载与岗位评分配置
-- `web_script.js`：Boss 页面 Tampermonkey 脚本
+- `web_script.js`：Boss 页面 Tampermonkey 脚本（搜索、小时调度、打招呼、简历请求判断）
 - `user_config.example.json`：用户配置模板
-- `resume-example.md`：简历模板
-- `PROJECT_MEMORY.md`：长期项目背景与关键决策
-- `DEV_LOG.md`：开发演进记录
+- `start_backend.bat`：Windows 一键启动后端
 
 ## 快速开始
 
@@ -77,17 +49,7 @@ cp user_config.example.json user_config.json
 - `frontend.resumeIndex`：发第几份简历，从 0 开始
 - `frontend.thread`：投递阈值
 
-### 3. （可选）准备简历文件
-
-```bash
-cp resume-example.md resume.md
-```
-
-说明：
-- 当前自动投递主链并不依赖 `resume.md` 做岗位打分
-- 它主要用于你自己管理简历内容，或保留给遗留接口扩展使用
-
-### 4. 启动后端
+### 3. 启动后端
 
 ```bash
 python main.py
@@ -99,117 +61,59 @@ Windows 下也可以直接双击：
 start_backend.bat
 ```
 
-### 5. 部署浏览器脚本
+### 4. 部署浏览器脚本
 
 把 `web_script.js` 内容粘贴到 Tampermonkey 中，然后打开 Boss 直聘页面即可。
 
-## 最小使用路径
+前端启动时只请求后端 `/client-config`，统一读取 `introduce`、`tags`、`frontend` 和 `schedule`；请求失败会在页面日志中提示并停止，不做旧接口回退。
 
-1. 复制 `user_config.example.json` 为 `user_config.json`
-2. 修改：
-   - `introduce`
-   - `tags`
-   - `frontend.resumeIndex`
-   - `frontend.thread`
-3. 启动后端 `python main.py`
-4. 浏览器装入 `web_script.js`
-5. 打开 Boss 直聘页面测试
+## 工作时间与调度规则
+
+- `schedule.weekdays`：工作日，默认 `[1, 2, 3, 4, 5]`，对应周一至周五
+- `schedule.startHour` / `endHour`：执行窗口，默认 9 到 18，即 `09:00 <= 当前时间 < 18:00`
+- `schedule.minPerHour` / `maxPerHour`：每小时随机生成 10-20 个时点
+- 每个整点小时首次进入时重新生成计划；时点把该小时平均分段、每段随机取一个并按时间排序，保证分散
+- 只有岗位评分达到 `frontend.thread` 阈值时，才等待并消费下一个未来时点
+- 一个时点最多发起一次打招呼尝试；成功、业务拒绝、网络失败或超时都不退回、不重试
+- 没有合格岗位时，已经过去的时点直接作废，不补发、不追赶
+- 非工作时间自动等待到下一个工作日 09:00
+- 页面日志面板可以随时暂停/继续；暂停期间到达的时点作废
+- 调度计划只保存在当前脚本内存中，刷新页面即重置，不恢复上一次计划
+
+调度日志输出在搜索页左下角日志面板：
+
+```text
+本小时计划 14 次打招呼尝试
+下一次计划时间 10:17:35
+执行本小时第 4/14 次尝试
+本时点执行失败，继续等待下一时点
+当前不在工作时间，等待下一个工作日 09:00
+```
+
+## 简历请求规则
+
+- 只读取当前会话最新一条 HR 文本，不分析完整上下文，不调用任何模型
+- Boss 内置“索要附件简历”请求卡片视为明确请求
+- “你好”“方便聊聊吗”“介绍一下自己”等普通消息不发送简历
+- “不用发简历”“不需要简历”“简历不匹配”“暂不考虑”等消息不发送简历
+- “发一份简历”“简历发我一下”“请发送简历”“麻烦把简历发过来”等明确表达才发送
+- 否定规则优先于请求规则
+- 简历索引固定使用 `frontend.resumeIndex`，不重新请求岗位评分
+- 发送成功后只回复一次“发给您了哈”，之后该会话不再执行任何自动处理
+- 聊天记录出现“点击预览附件简历”后，该会话永久跳过自动处理
 
 ## 配置说明
 
-当前推荐把所有用户差异化内容集中维护在 `user_config.json`。
+所有用户差异化内容集中维护在 `user_config.json`：
 
-普通用户主要改：
-- `introduce`
-- `tags`
-- `frontend.resumeIndex`
-- `frontend.thread`
-
-更细的岗位评分规则默认由项目维护者在 `scoring` 中调整，不要求普通用户自己从零设计。
-
-### 顶层字段
-- `resume_name`
-- `think_model`
-- `chat_model`
-- `introduce`
-- `character`
-- `tags`
-
-### `frontend`
-浏览器端运行参数，例如：
-- `resumeIndex`
-- `thread`
-- `manualFilterWaitMs`
-- `roundRestartDelayMs`
-- `maxEmptyRounds`
-- `detailTimeout`
-- `greetTimeout`
-- `preloadScrollPixels`
-- `preloadScrollWaitMs`
-
-### `backend`
-后端运行参数，例如：
-- `job_score_delay_base_ms`
-- `job_score_delay_jitter_ms`
-
-### `scoring`
-岗位评分规则主要分成：
-- 标题强负向词
-- 标题弱负向扣分词
-- 标题强匹配词
-- 标题中匹配词
-- 正文强正向词
-- 正文辅助正向词
-- 正文负向扣分词
-
-当前推荐理解方式：
-- 标题只做快速筛选
-- JD 正文里的真实技术要求才是主要判断依据
-
-前端启动时会优先请求后端 `/client-config`，统一读取：
-- `introduce`
-- `tags`
-- `frontend`
-
-## 关于大模型依赖
-
-当前主链在未安装 `ollama` 的情况下也能运行，覆盖这些能力：
-- 固定 `tags`
-- 固定 `introduce`
-- 规则岗位评分
-- 收到新消息后直接发简历
-
-如果你还要继续启用这些遗留接口：
-- `/reply`
-- `/is-need-resume`
-- `/is-need-works`
-
-再额外安装 `ollama` 即可。
-
-也就是说：
-- `ollama` 现在属于遗留能力
-- 不是主链运行前提
+- `introduce`：固定打招呼语
+- `tags`：搜索关键词，按顺序轮换
+- `schedule`：工作时间与每小时时点数量
+- `frontend`：浏览器端运行参数（`resumeIndex`、`thread` 等）
+- `backend`：后端评分延迟参数（`job_score_delay_base_ms`、`job_score_delay_jitter_ms`）
+- `scoring`：岗位评分关键词规则（标题强负向 / 弱负向 / 强匹配 / 中匹配，正文正向 / 辅助 / 负向）
 
 ## 仓库说明
 
-- `user_config.json`、`resume.md`、日志文件等本地文件默认不进入仓库
+- `user_config.json` 等本地文件默认不进入仓库
 - `user_config.example.json` 是公开模板，不建议直接提交真实配置
-- 当前公开仓库优先服务中文用户，因此默认中文说明
-
-## 历史说明
-
-这个项目在个人使用阶段曾演化出一版“双简历 / 双方向自动路由”的复杂版本。
-
-那版代码已经单独归档到分支：
-- `archive/double-routing-chaos`
-
-该分支仅供历史参考，不推荐新用户直接从那里开始。
-
-## 后续方向
-
-当前更合理的继续方向是：
-- 保持用户配置外置化
-- 保持岗位规则可调
-- 继续优先保证 Boss 自动化链路稳定
-- 不把主线重新做回复杂双路由或重度模型依赖版本
-- 继续让评分更贴近 JD 正文真实技术要求，而不是岗位名字字面词
