@@ -32,3 +32,17 @@ logs/
 Thumbs.db
 .idea/
 .vscode/
+
+# Local project configuration and private resume data
+test.*
+.codex/
+cache.json
+user_config.json
+resume.md
+resume-lock.md
+server.out.log
+server.err.log
+goodjobs.zip
+PROJECT_MEMORY.md
+job_decisions.jsonl
+job_actions.jsonl
