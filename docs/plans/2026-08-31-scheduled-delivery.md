@@ -2,11 +2,11 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** 保留原作者的岗位搜索、评分、筛选和打招呼流程，只增加工作日 09:00-18:00 每小时随机投递 10-20 份的时间控制，并将简历发送条件改为“HR 明确索要”。
+**Goal:** 保留原作者的岗位搜索、评分、筛选和打招呼流程，移除未使用的 LLM 遗留能力，只增加工作日 09:00-18:00 每小时随机投递 10-20 份的时间控制，并将简历发送条件改为“HR 明确索要”。
 
-**Architecture:** 调度状态只保存在当前油猴脚本的内存中，不增加 SQLite、调度 API 或新后端进程。油猴脚本启动后为每个小时生成 10-20 个分散的随机时点，在原作者判定岗位可以投递后等待下一个时点，再继续执行原打招呼流程；聊天页只在最新 HR 消息明确索要简历且当前会话未发过简历时调用作者原有 `sendResume()`。
+**Architecture:** 岗位筛选继续由 Python 关键词表、子串匹配和固定权重完成，不调用 LLM；HR 是否索要简历由油猴脚本中的确定性文本规则判断。调度状态只保存在当前油猴脚本的内存中，不增加 SQLite、调度 API 或新后端进程。油猴脚本启动后为每个小时生成 10-20 个分散的随机时点，在原作者判定岗位可以投递后等待下一个时点，再继续执行原打招呼流程；聊天页只在最新 HR 消息明确索要简历且当前会话未发过简历时调用作者原有 `sendResume()`。
 
-**Tech Stack:** Python 3、FastAPI、Tampermonkey、原生 JavaScript、BroadcastChannel、unittest。
+**Tech Stack:** Python 3、FastAPI、Tampermonkey、原生 JavaScript、BroadcastChannel、unittest。不使用 Ollama、云端模型 API 或其他 LLM。
 
 ---
 
@@ -21,7 +21,8 @@
 - 不增加 SQLite、文件持久化、调度状态 API 或状态管理页面。
 - 调度信息直接输出到原有页面日志和浏览器控制台。
 - 不新增一键启动入口，继续使用原作者的 `start_backend.bat`。
-- 不修改 `core.py` 的关键词评分、权重、阈值和岗位匹配策略。
+- 删除遗留的 Ollama 依赖、模型配置和 LLM 接口；项目安装和运行不需要下载模型。
+- 不修改 `core.py` 中现有的关键词评分、权重、阈值和岗位匹配策略。
 - 不修改作者现有的搜索词轮换、岗位详情读取和招呼语发送逻辑。
 - 不修改作者现有的 `resumeIndex` 和简历选择方式。
 - 不新增 `dryRun`；该能力不属于原作者项目。
@@ -37,6 +38,13 @@
 - 后端通过现有 `/client-config` 返回 `tags`，油猴脚本按数组顺序循环搜索。
 
 本次开发只增加调度配置，不改变 `tags` 的读取、覆盖和轮换方式。
+
+## 规则判断说明
+
+- 搜索词来自用户配置的 `tags`，油猴脚本按顺序轮换搜索。
+- 岗位是否通过由 `core.py` 的关键词表、子串匹配、加减分和阈值完成。
+- HR 是否明确索要简历由 JavaScript 文本规则完成：先匹配否定表达，再匹配明确请求表达。
+- 上述流程均为确定性程序逻辑，不发送文本给本地或云端大模型。
 
 ## 执行流程
 
@@ -64,7 +72,64 @@ HR 发来新消息
 回复“发给您了哈”并停止自动聊天
 ```
 
-## Task 1: 增加最小调度配置
+## Task 1: 移除 LLM 遗留依赖和入口
+
+**Files:**
+- Modify: `requirements.txt`
+- Modify: `config.py`
+- Modify: `user_config.example.json`
+- Modify: `core.py`
+- Modify: `main.py`
+- Modify: `web_script.js`
+- Modify: `test_single_route_backend.py`
+- Delete: `prompts.py`
+- Delete: `tools.py`
+- Delete: `schema.py`
+- Delete: `cache.py`
+
+**Step 1: 固化无 LLM 主链测试**
+
+调整测试配置，删除 `think_model`、`chat_model` 和 `character`，验证以下接口仍正常：
+
+- `/tags`
+- `/get-introduce`
+- `/client-config`
+- `/get-job-score`
+
+**Step 2: 删除运行依赖和配置**
+
+- 从 `requirements.txt` 删除 `ollama`。
+- 从默认配置和用户配置模板删除 `think_model`、`chat_model`、`character`。
+- 删除仅供旧缓存层使用、实际未参与简历选择的 `resume_name`；简历仍由 `frontend.resumeIndex` 选择。
+- `/client-config` 不再返回 `character`。
+
+**Step 3: 删除未使用的 LLM 代码**
+
+- 从 `core.py` 删除 Ollama 导入、生成自我介绍/标签/性格、AI 回复和 AI 意图判断函数。
+- 保留 `evaluateJobMatch()`、`evaluateSingleRouteDelivery()` 和现有评分规则，不改变其行为。
+- 从 `main.py` 删除 `/reply`、`/is-need-resume`、`/is-need-works` 三个旧接口。
+- 从油猴脚本 `Api` 类删除对应的未使用客户端方法。
+- 删除只服务于上述旧能力的 `prompts.py`、`tools.py`、`schema.py`、`cache.py`。
+
+**Step 4: 验证项目无 LLM 引用**
+
+Run: `rg -n "ollama|think_model|chat_model|isNeedResume|isNeedWorks|replyMsg" -g "*.py" -g "*.js" -g "*.json" .`
+
+Expected: 业务代码和配置中无匹配结果。
+
+Run: `python -m unittest test_single_route_backend.py -v`
+
+Expected: 全部 PASS。
+
+**Step 5: 提交**
+
+```bash
+git add requirements.txt config.py user_config.example.json core.py main.py web_script.js test_single_route_backend.py
+git add -u prompts.py tools.py schema.py cache.py
+git commit -m "refactor: remove legacy llm dependencies"
+```
+
+## Task 2: 增加最小调度配置
 
 **Files:**
 - Modify: `config.py`
@@ -120,7 +185,7 @@ git add config.py user_config.example.json test_single_route_backend.py
 git commit -m "feat: add delivery schedule configuration"
 ```
 
-## Task 2: 在油猴脚本内增加小时调度
+## Task 3: 在油猴脚本内增加小时调度
 
 **Files:**
 - Modify: `web_script.js:15`
@@ -195,7 +260,7 @@ git add web_script.js
 git commit -m "feat: schedule hourly greeting attempts"
 ```
 
-## Task 3: 仅在 HR 明确索要时发送简历
+## Task 4: 仅在 HR 明确索要时发送简历
 
 **Files:**
 - Modify: `web_script.js:1475`
@@ -203,7 +268,7 @@ git commit -m "feat: schedule hourly greeting attempts"
 
 **Step 1: 增加严格判断函数**
 
-在浏览器脚本内增加 `isExplicitResumeRequest(message)`，只读取最新一条 HR 文本。
+在浏览器脚本内增加 `isExplicitResumeRequest(message)`，只读取最新一条 HR 文本；使用字符串标准化和正则/关键词白名单，不调用后端模型接口。
 
 判断顺序：
 
@@ -280,7 +345,7 @@ git add web_script.js
 git commit -m "feat: require explicit resume request"
 ```
 
-## Task 4: 回归验证和文档更新
+## Task 5: 回归验证和文档更新
 
 **Files:**
 - Modify: `README.md`
@@ -328,6 +393,7 @@ Expected: 退出码为 0。
 - `tags` 的默认值与 `user_config.json` 覆盖方式。
 - 工作时间和每小时随机投递规则。
 - 明确索要简历的判断规则。
+- 删除 Ollama、模型配置和遗留 LLM 接口说明，明确项目不需要 LLM。
 
 保持原 `start_backend.bat` 启动说明不变。
 
@@ -341,6 +407,7 @@ git commit -m "docs: document scheduled delivery behavior"
 ## 完成标准
 
 - 项目仍通过原 `start_backend.bat` 启动。
+- `requirements.txt`、用户配置和业务代码中不再包含 Ollama 或模型配置，项目运行不需要 LLM。
 - 不存在 `dryRun`、SQLite、调度 API 或一键启动器。
 - 作者原有 `tags` 配置和搜索词轮换方式保持不变。
 - 作者原有岗位评分、投递阈值和招呼语流程保持不变。
@@ -350,4 +417,3 @@ git commit -m "docs: document scheduled delivery behavior"
 - 同一会话最多自动发送一次简历。
 - 简历发送后回复一次“发给您了哈”，之后不再自动聊天。
 - 调度计划和执行进度可以在原页面日志中查看。
-
