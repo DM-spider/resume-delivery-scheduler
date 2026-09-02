@@ -2,7 +2,7 @@ from datetime import datetime
 import asyncio
 import random
 from fastapi import FastAPI, Body
-from core import evaluateSingleRouteDelivery
+from core import evaluateJobMatch
 from config import Config
 
 
@@ -16,7 +16,7 @@ async def get_client_config():
 
 @app.post("/get-job-score", summary="获取职位匹配度")
 async def get_job_score(job: str = Body(..., description="职位信息")):
-    result = evaluateSingleRouteDelivery(job)
+    result = evaluateJobMatch(job)
     delay_ms = max(0, Config.job_score_delay_base_ms + random.randint(
         -Config.job_score_delay_jitter_ms,
         Config.job_score_delay_jitter_ms,
@@ -29,6 +29,7 @@ async def get_job_score(job: str = Body(..., description="职位信息")):
         'detail': '职位描述',
         'none': '未命中',
         'title_negative': '标题负向拦截',
+        'detail_negative': '职位描述负向拦截',
         'salary_negative': '薪资下限拦截',
     }
     print(
@@ -51,8 +52,6 @@ async def get_job_score(job: str = Body(..., description="职位信息")):
     await asyncio.sleep(delay_ms / 1000)
     return {
         'score': result['score'],
-        'introduce': result['introduce'],
-        'resumeIndex': result['resumeIndex'],
     }
 
 

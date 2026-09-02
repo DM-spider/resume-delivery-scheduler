@@ -105,6 +105,32 @@ def evaluateJobMatch(job: str):
             'reason': '岗位名称命中强负向关键词',
         }
 
+    detail_block_matches = __find_matches(detail, Config.detail_block_keywords)
+    if detail_block_matches:
+        return {
+            'title': title,
+            'salary': salary,
+            'salary_min_k': salary_min_k,
+            'detail': detail,
+            'matched_field': 'detail_negative',
+            'keyword': detail_block_matches[0][0],
+            'score': 0,
+            'blocked': True,
+            'title_score': 0,
+            'detail_score': 0,
+            'penalty_score': 0,
+            'title_penalty_score': 0,
+            'combo_score': 0,
+            'final_score': 0,
+            'title_match_level': 'negative',
+            'title_matches': [],
+            'title_penalty_matches': [],
+            'detail_infra_matches': [],
+            'detail_support_matches': [],
+            'detail_negative_matches': [keyword for keyword, _ in detail_block_matches],
+            'reason': '职位描述命中校招或应届生强负向关键词',
+        }
+
     title_strong_matches = __find_matches(title, Config.title_strong_keywords)
     title_medium_matches = __find_matches(title, Config.title_medium_keywords)
     title_match_level = 'none'
@@ -195,13 +221,4 @@ def evaluateJobMatch(job: str):
         'detail_support_matches': [keyword for keyword, _ in detail_support_matches],
         'detail_negative_matches': [keyword for keyword, _ in detail_negative_matches],
         'reason': reason,
-    }
-
-
-def evaluateSingleRouteDelivery(job: str):
-    match_result = evaluateJobMatch(job)
-    return {
-        **match_result,
-        'introduce': Config.introduce,
-        'resumeIndex': Config.frontend.get('resumeIndex', 0),
     }

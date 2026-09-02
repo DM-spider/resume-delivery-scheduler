@@ -20,7 +20,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo Starting goodjob backend with %PYTHON_EXE%...
+echo Starting JobApplyScheduler backend with %PYTHON_EXE%...
 "%PYTHON_EXE%" main.py
 set "EXIT_CODE=%ERRORLEVEL%"
 echo.

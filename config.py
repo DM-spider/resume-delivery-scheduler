@@ -1,6 +1,7 @@
 import copy
 import json
 import os
+from pathlib import Path
 
 
 DEFAULT_USER_CONFIG = {
@@ -10,8 +11,7 @@ DEFAULT_USER_CONFIG = {
         'weekdays': [1, 2, 3, 4, 5],
         'startHour': 9,
         'endHour': 18,
-        'minPerHour': 10,
-        'maxPerHour': 20,
+        'jobsPerRound': 50,
         'testIntervalSeconds': 10,
         'strategies': [
             'balanced',
@@ -29,14 +29,11 @@ DEFAULT_USER_CONFIG = {
         'serverHost': 'http://127.0.0.1:8000',
         'resumeIndex': 0,
         'thread': 50,
-        'timestampTimeout': 3000,
         'onlyGreet': False,
         'manualFilterWaitMs': 10000,
-        'roundRestartDelayMs': 2000,
-        'maxEmptyRounds': 3,
-        'maxJobsPerRun': 200,
         'detailTimeout': 10000,
         'greetTimeout': 12000,
+        'resumeScanTimeout': 120000,
         'preloadScrollPixels': 180,
         'preloadScrollWaitMs': 450,
         'preloadStableRoundsLimit': 24,
@@ -69,8 +66,15 @@ DEFAULT_USER_CONFIG = {
             '图像处理': 100,
             '自动驾驶': 100,
             'slam': 100,
+            '机器人': 100,
+            'robotics': 100,
             '嵌入式': 100,
             '硬件': 100,
+            '春招': 100,
+            '秋招': 100,
+            '校招': 100,
+            '校园招聘': 100,
+            '应届': 100,
             '渠道': 100,
             '光伏': 100,
         },
@@ -215,6 +219,14 @@ DEFAULT_USER_CONFIG = {
             '财报': 6,
             '资本市场': 6,
         },
+        'detail_block_keywords': {
+            '春招': 100,
+            '秋招': 100,
+            '校招': 100,
+            '校园招聘': 100,
+            '应届生': 100,
+            '应届毕业生': 100,
+        },
         'detail_negative_keywords': {
             'spring': 14,
             'spring boot': 16,
@@ -237,7 +249,10 @@ DEFAULT_USER_CONFIG = {
             '推荐系统': 10,
             'ctr': 12,
             'cvr': 12,
-            '嵌入式': 16,
+            '机器人': 24,
+            'robot': 24,
+            '具身智能': 20,
+            '嵌入式': 24,
             '硬件': 14,
             '值班': 10,
             '渠道': 12,
@@ -259,22 +274,11 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
-def _apply_legacy_compat(config: dict, user_config: dict) -> dict:
-    legacy_top_level_to_nested = {
-        'job_score_delay_base_ms': ('backend', 'job_score_delay_base_ms'),
-        'job_score_delay_jitter_ms': ('backend', 'job_score_delay_jitter_ms'),
-        'thread': ('frontend', 'thread'),
-    }
-    for old_key, (group, new_key) in legacy_top_level_to_nested.items():
-        if old_key in user_config and user_config[old_key] is not None:
-            config[group][new_key] = user_config[old_key]
-    return config
-
-
 def _load_raw_user_config():
-    config_path = 'user_config.json'
-    if os.path.exists(config_path):
-        with open(config_path, 'r', encoding='utf-8') as f:
+    default_path = Path(__file__).resolve().parent / 'user_config.json'
+    config_path = Path(os.environ.get('JOB_APPLY_SCHEDULER_CONFIG_PATH', default_path))
+    if config_path.exists():
+        with config_path.open('r', encoding='utf-8') as f:
             user_config = json.load(f)
         if isinstance(user_config, dict):
             return user_config
@@ -283,14 +287,12 @@ def _load_raw_user_config():
 
 def load_user_config():
     config = copy.deepcopy(DEFAULT_USER_CONFIG)
-    user_config = RAW_USER_CONFIG
+    user_config = _load_raw_user_config()
     if isinstance(user_config, dict) and user_config:
         config = _deep_merge(config, user_config)
-        config = _apply_legacy_compat(config, user_config)
     return config
 
 
-RAW_USER_CONFIG = _load_raw_user_config()
 USER_CONFIG = load_user_config()
 
 
@@ -308,11 +310,10 @@ class Config:
     title_medium_keywords = USER_CONFIG['scoring']['title_medium_keywords']
     detail_infra_keywords = USER_CONFIG['scoring']['detail_infra_keywords']
     detail_support_keywords = USER_CONFIG['scoring']['detail_support_keywords']
+    detail_block_keywords = USER_CONFIG['scoring']['detail_block_keywords']
     detail_negative_keywords = USER_CONFIG['scoring']['detail_negative_keywords']
 
     frontend = USER_CONFIG['frontend']
-    backend = USER_CONFIG['backend']
-    scoring = USER_CONFIG['scoring']
     schedule = USER_CONFIG['schedule']
 
     @classmethod
